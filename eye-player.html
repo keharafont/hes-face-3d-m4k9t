@@ -1,0 +1,1209 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow, noarchive">
+
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<title>EE Eye Player</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none}
+  canvas{display:block;width:100vw;height:100vh}
+
+  #veil{
+    position:fixed;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:14px;
+    background:#000;color:#8b949e;z-index:10;
+    font:15px/1.6 -apple-system,"Noto Sans JP",sans-serif;text-align:center;padding:24px;
+  }
+  #veil b{color:#e6edf3;font-size:20px;font-weight:600;letter-spacing:.06em}
+  #veil small{font:11px ui-monospace,Menlo,monospace;color:#484f58}
+  #veil.gone{display:none}
+
+  #dot{
+    position:fixed;top:10px;right:12px;width:8px;height:8px;border-radius:50%;
+    background:#f85149;z-index:5;opacity:.55;transition:background .2s;
+  }
+  #dot.on{background:#3fb950}
+
+  #hud{
+    position:fixed;left:0;top:0;z-index:6;display:none;
+    font:11px/1.6 ui-monospace,Menlo,monospace;color:#7d8590;
+    background:rgba(0,0,0,.7);padding:8px 12px;border-bottom-right-radius:8px;
+    white-space:pre;
+  }
+  #hud.on{display:block}
+  #viewBtn{
+    position:fixed;right:10px;top:10px;z-index:7;opacity:.25;
+    font:12px -apple-system,sans-serif;color:#c9d1d9;background:rgba(0,0,0,.6);
+    border:1px solid #444;border-radius:6px;padding:4px 10px;cursor:pointer;
+  }
+  #viewBtn:hover{opacity:1}
+</style>
+
+<canvas id="c"></canvas>
+<div id="dot"></div>
+<div id="hud"></div>
+<button id="viewBtn" title="目の向きを反転（M キー）">↔ 運転者</button>
+<div id="veil">
+  <b>EE EYE PLAYER</b>
+  <div>画面をタップして全画面表示を開始</div>
+  <small id="url"></small>
+  <small>タップ=全画面 ／ ダブルタップ=デバッグ表示</small>
+</div>
+
+<script>
+(function(){
+  'use strict';
+  var $ = function(id){ return document.getElementById(id); };
+  var WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/player';
+  $('url').textContent = WS_URL;
+
+  var clamp = function(v,a,b){ return v<a?a:v>b?b:v; };
+  var lp = function(cur,target,dt,tau){ return tau<=0?target:cur+(target-cur)*(1-Math.exp(-dt/tau)); };
+  var RM = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ================= 受信 ================= */
+  var STALE_MS = 500;               // プロトコル仕様: 0.5秒途絶で自律アイドルへ
+  var lastMsgAt = 0, msgCount = 0, rate = 0, rateCount = 0;
+  var P = null;
+  var sock = null;
+
+  // ローカル駆動フック。window.EE_LOCAL_SOURCE(dt) が定義されていれば
+  // WebSocket ではなくそれを毎フレーム呼ぶ（オフラインのプレビュー用）。
+  var LOCAL = (typeof window.EE_LOCAL_SOURCE === 'function') ? window.EE_LOCAL_SOURCE : null;
+
+  function ingest(m){
+    P = m;
+    lastMsgAt = performance.now();
+    msgCount++; rateCount++;
+    if (m.events){
+      if (m.events.blink) triggerBlink();
+      if (m.events.widen) widenFlash = 1;
+    }
+  }
+
+  function connect(){
+    try { sock = new WebSocket(WS_URL); } catch(e){ setTimeout(connect, 1000); return; }
+    sock.onopen = function(){ $('dot').classList.add('on'); };
+    sock.onclose = function(){ $('dot').classList.remove('on'); setTimeout(connect, 1000); };
+    sock.onerror = function(){};
+    sock.onmessage = function(ev){
+      var m; try { m = JSON.parse(ev.data); } catch(_){ return; }
+      if (m.hello) return;
+      if (m.mode && m.mode.iris) window.EE_SET_IRIS_MODE(m.mode.iris);
+      if (PREVIEW) return;   // プレビュー中はサーバのフレームを使わない
+      ingest(m);
+    };
+  }
+  setInterval(function(){ rate = rateCount; rateCount = 0; }, 1000);
+
+  /* ================= 表示状態 ================= */
+  // まぶたの開閉アニメ・アイドル挙動はレンダラの責務。
+  // エンジンが落ちても目が死なないよう、ここだけで完結して動けること。
+  var blinkT = -1, BLINK_SEC = 0.20;
+  var widenFlash = 0, emoFlash = 0;
+
+  var openS = 0.55, tiltS = -0.09, lowerS = 0.02, diaS = 0.45, irisD = 0.40;
+  var gLeanS = 0;   // 横Gに負けるまぶた（+右目 / −左目）
+
+  // 瞳孔の演出パターン。どちらが良いかは意匠の判断なので、切り替えられるようにしてある。
+  //   'fixed' … 赤いリングは固定サイズ。黒目だけが開閉する
+  //   'scale' … 赤も黒も一緒に縮む。絞ると灯体のシルバーが見えてくる
+  var irisMode = /[?&]iris=fixed/.test(location.search) ? 'fixed' : 'scale';   // 既定は「赤も縮む」
+  // 片目だけを描くモード（?eye=left / ?eye=right）: 車の画像の灯体くり抜きにはめ込む用。
+  // 物理的な左右（運転者から見て）で指定する。鏡表示のときは自動で入れ替わる
+  var NOLAMP = /[?&]nolamp=1/.test(location.search);   // 3D 側が実際のレンズ縁にウィンカーを描くので、2D の帯は出さない
+  var ONLY_EYE = /[?&]eye=left/.test(location.search) ? -1 : /[?&]eye=right/.test(location.search) ? 1 : 0;
+  // 見え方の切り替え: 「運転者の向き」（車が右へ曲がる＝画面右へ目が動く。既定）と
+  // 「正面から顔を見る向き」（見る人から見て左へ動く。実際の灯体を正面から見たとき）。
+  // 画面右上のボタン、M キー、?view=front / ?view=driver で切り替え。選択は端末に記憶。
+  var VIEW_SIGN = 1;
+  (function(){
+    var q = /[?&]view=(front|driver)/.exec(location.search);
+    var saved = null; try { saved = localStorage.getItem('eye-view'); } catch(_){}
+    var v = q ? q[1] : (saved || 'driver');
+    VIEW_SIGN = v === 'front' ? -1 : 1;
+  })();
+  function setView(sign){
+    VIEW_SIGN = sign;
+    try { localStorage.setItem('eye-view', sign < 0 ? 'front' : 'driver'); } catch(_){}
+    var b = document.getElementById('viewBtn');
+    if (b) b.textContent = sign < 0 ? '↔ 正面（鏡）' : '↔ 運転者';
+  }
+  window.EE_SET_IRIS_MODE = function(m){ if (m === 'fixed' || m === 'scale') irisMode = m; };
+  window.EE_GET_IRIS_MODE = function(){ return irisMode; };
+  var clock = 0;                    // 呼吸ゆらぎ用の時計
+  var flowS = 0, flowPh = 0;        // 流れるハイライト: 強さ(車速比例)と位相
+  var gxS = 0, gyS = 0, convS = 0;   // convS: 寄り目具合（両目が目頭側へ）
+  var emo = '—', emoI = 0, prevEmo = '';
+
+  var idleT = 0, idleBlink = 1.8, idleGx = 0, idleGy = 0, idleGt = 0;
+
+  function triggerBlink(){ if (blinkT < 0) blinkT = 0; }
+
+  /* ================= 描画 ================= */
+  var cv = $('c'), ex = cv.getContext('2d');
+  var W = 0, H = 0, DPR = 1;
+
+  function resize(){
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    ex.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', function(){ setTimeout(resize, 250); });
+  resize();
+
+  var EMO_COLOR = {
+    '覚醒':'#ff4438', '昂揚':'#ff2d20', '我慢':'#ff8c1a',
+    '集中':'#ffc247', '疾走':'#7ee0a0', '余裕':'#6b7480', '待機':'#454c55'
+  };
+
+  // ---- 灯体の意匠 ----
+  // 参照写真（GR Yaris 左灯体）を画素解析してトレースした値。
+  // 内側(目頭) = -x / 外側 = +x の正規化座標。x は w、y は h が単位。
+  // 左目は x を反転して描くので形は1つしか持たない。
+  // 目頭が鋭く下がり、目尻が高く立つ ＝ この傾き自体が険しい表情の下地になる。
+  var ASPECT = 1.82;                 // 実測 111px / 61px
+
+  var LENS = [
+    [-1.00, 0.31, 0.015],            // 目頭（鋭角）
+    [-0.85, 0.16, 0.05],
+    [-0.63, 0.00, 0.06],
+    [-0.41,-0.13, 0.06],
+    [-0.20,-0.23, 0.06],
+    [ 0.02,-0.33, 0.06],
+    [ 0.23,-0.52, 0.06],
+    [ 0.45,-0.62, 0.06],
+    [ 0.67,-0.72, 0.06],
+    [ 0.80,-0.85, 0.04],
+    [ 0.99,-0.89, 0.02],             // 外側上端の細い尾
+    [ 0.99,-0.66, 0.02],
+    [ 0.91,-0.60, 0.04],
+    [ 0.88, 0.44, 0.10],             // 外側の立った縁
+    [ 0.77, 0.56, 0.08],
+    [ 0.67, 0.66, 0.08],
+    [ 0.45, 0.75, 0.08],
+    [ 0.23, 0.82, 0.08],
+    [ 0.02, 0.85, 0.08],
+    [-0.20, 0.92, 0.08],
+    [-0.41, 0.98, 0.08],
+    [-0.63, 0.89, 0.08],
+    [-0.74, 0.56, 0.06],
+    [-0.85, 0.43, 0.05]
+  ];
+  // まぶたの縁は「灯体の上辺 → 下辺」を closure で補間して作る。
+  // 水平な縁だと灯体の傾きと喧嘩して、開いているのに眠そうに見えてしまう。
+  var LENS_DEF = LENS;   // 既定の外形（3D 焼き込み時は実際のレンズ外形に差し替える）
+  var LENS_TOP = [[-1.00,0.31],[-0.85,0.16],[-0.63,0.00],[-0.41,-0.13],[-0.20,-0.23],
+                  [0.02,-0.33],[0.23,-0.52],[0.45,-0.62],[0.67,-0.72],[0.80,-0.85],[0.99,-0.89]];
+  var LENS_BOT = [[-1.00,0.31],[-0.85,0.43],[-0.74,0.56],[-0.63,0.89],[-0.41,0.98],[-0.20,0.92],
+                  [0.02,0.85],[0.23,0.82],[0.45,0.75],[0.67,0.66],[0.77,0.56],[0.88,0.44],[0.99,-0.62]];
+
+  var LENS_TOP_DEF = LENS_TOP, LENS_BOT_DEF = LENS_BOT;
+  // 3D 側から届く実際のレンズ外形（キャンバス正規化座標: nx 0..1, ny 0..1）。片目モードでだけ使う
+  var LENS_OVR = null;
+  function ovrShape(side, W, H, cx0, cy, w, h){
+    var pts = [], i;
+    for (i = 0; i < LENS_OVR.top.length; i++){ var px = LENS_OVR.top[i][0]*W; var u = side*(px - cx0)/w; pts.push([u, (LENS_OVR.top[i][1]*H - cy)/h, (LENS_OVR.bot[i][1]*H - cy)/h]); }
+    pts.sort(function(a, b){ return a[0] - b[0]; });
+    var top = pts.map(function(p){ return [p[0], p[1]]; }), bot = pts.map(function(p){ return [p[0], p[2]]; });
+    var poly = pts.map(function(p){ return [p[0], p[1], 0.03]; }).concat(pts.slice().reverse().map(function(p){ return [p[0], p[2], 0.03]; }));
+    return { top: top, bot: bot, poly: poly };
+  }
+  // 虹彩は写真どおり「ほぼ中央・横長の楕円」。円にすると別物になる。
+  var IRIS_CX = -0.08, IRIS_CY = 0.13, IRIS_RX = 0.52, IRIS_RY = 0.68;
+
+  // 写真に実在する要素のうち、独立部品として残すのはウインカーのスリットだけ。
+  var AMBER = [[0.85,-0.93],[0.99,-0.89],[0.98,-0.66],[0.86,-0.70]]; // 目尻上の琥珀
+
+  function edgeY(pts, u){
+    if (u <= pts[0][0]) return pts[0][1];
+    for (var i = 1; i < pts.length; i++){
+      if (u <= pts[i][0]){
+        var a = pts[i-1], b = pts[i];
+        return a[1] + (b[1]-a[1]) * (u-a[0])/((b[0]-a[0]) || 1);
+      }
+    }
+    return pts[pts.length-1][1];
+  }
+
+  // 角を丸めた多角形。灯体らしい直線基調にしつつ角だけ落とす。
+  function roundPoly(g, pts){
+    var n = pts.length;
+    g.beginPath();
+    for (var i = 0; i < n; i++){
+      var p0 = pts[(i-1+n)%n], p1 = pts[i], p2 = pts[(i+1)%n];
+      var r = p1[2];
+      var d1 = Math.hypot(p1[0]-p0[0], p1[1]-p0[1]) || 1;
+      var d2 = Math.hypot(p2[0]-p1[0], p2[1]-p1[1]) || 1;
+      var t1 = Math.min(0.45, r/d1), t2 = Math.min(0.45, r/d2);
+      var ax = p1[0] + (p0[0]-p1[0])*t1, ay = p1[1] + (p0[1]-p1[1])*t1;
+      var bx = p1[0] + (p2[0]-p1[0])*t2, by = p1[1] + (p2[1]-p1[1])*t2;
+      if (i === 0) g.moveTo(ax, ay); else g.lineTo(ax, ay);
+      g.quadraticCurveTo(p1[0], p1[1], bx, by);
+    }
+    g.closePath();
+  }
+  function poly(g, pts, w, h){
+    g.beginPath();
+    for (var i = 0; i < pts.length; i++){
+      var x = pts[i][0]*w, y = pts[i][1]*h;
+      i ? g.lineTo(x,y) : g.moveTo(x,y);
+    }
+    g.closePath();
+  }
+  function lensPath(g, w, h){
+    roundPoly(g, LENS.map(function(p){ return [p[0]*w, p[1]*h, p[2]*h]; }));
+  }
+
+  // 写真らしさは「面のムラ」で決まる。均一なグラデーションだけだと CG に見えるので、
+  // 生成したノイズを overlay で乗せてクローム面をざらつかせる。
+  var noiseTile = (function(){
+    var c = document.createElement('canvas'); c.width = c.height = 96;
+    var g = c.getContext('2d');
+    var img = g.createImageData(96,96), d = img.data;
+    for (var i = 0; i < d.length; i += 4){
+      var n = 128 + (Math.random()*104 - 52);
+      if (Math.random() < 0.05) n += 60;            // 粒だった反射
+      if (Math.random() < 0.05) n -= 55;
+      d[i] = d[i+1] = d[i+2] = n; d[i+3] = 255;
+    }
+    g.putImageData(img,0,0);
+    return c;
+  })();
+  var noisePat = null;
+
+  // 虹彩の繊維。角度ゆらぎ / 濃さ / 内外の伸び。毎フレーム振り直すとチラつくので固定する。
+  var FIBRE = (function(){
+    var a = [], seed = 20260831;
+    var rnd = function(){ seed = (seed*1664525 + 1013904223) % 4294967296; return seed/4294967296; };
+    for (var i = 0; i < 96; i++) a.push([rnd(), rnd(), rnd(), rnd(), rnd(), rnd()]);
+    return a;
+  })();
+
+  // 中心から減衰する光点。ハイライトはこれの重ね方で質が決まる。
+  function glow(g, cx, cy, r, rgb, a){
+    var gr = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    gr.addColorStop(0,    'rgba('+rgb+','+a.toFixed(3)+')');
+    gr.addColorStop(0.42, 'rgba('+rgb+','+(a*0.42).toFixed(3)+')');
+    gr.addColorStop(1,    'rgba('+rgb+',0)');
+    g.beginPath(); g.arc(cx, cy, r, 0, 7); g.fillStyle = gr; g.fill();
+  }
+
+  // 中心(cx,cy)・長さ len・太さ th・傾き slope の帯。両端はぼかす。
+  function streak(g, cx, cy, len, th, slope, col){
+    g.save();
+    g.translate(cx, cy);
+    var grd = g.createLinearGradient(-len/2, 0, len/2, 0);
+    grd.addColorStop(0, 'rgba(255,255,255,0)');
+    grd.addColorStop(0.30, col);
+    grd.addColorStop(0.72, col);
+    grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.beginPath();
+    g.moveTo(-len/2, -th/2 - len*slope/2);
+    g.lineTo( len/2, -th/2 + len*slope/2);
+    g.lineTo( len/2,  th/2 + len*slope/2);
+    g.lineTo(-len/2,  th/2 - len*slope/2);
+    g.closePath();
+    g.fillStyle = grd; g.fill();
+    g.restore();
+  }
+
+  function drawEyes(){
+    if (!noisePat){ try { noisePat = ex.createPattern(noiseTile, 'repeat'); } catch(_){} }
+    ex.clearRect(0,0,W,H);
+    // 3D のレンズに焼き込むとき（nolamp=1）は背景を塗らない: 2D の灯体の外側は透明にして、3D 側が実際のレンズ形状でリフレクターを敷く
+    if (!NOLAMP){ ex.fillStyle = '#000'; ex.fillRect(0,0,W,H); }
+
+    // --- 配置 ---
+    // 目頭どうしを寄せ、横位置の画角いっぱいに左右を大きく置く。
+    var gap = W*0.020;
+    var h = Math.min((W*0.99 - gap)/4/ASPECT, H*0.42);
+    var w = h*ASPECT;
+    var cy = H*0.46;
+    var dx = gap/2 + w;
+    if (ONLY_EYE){
+      // 片目: キャンバスいっぱいに 1 つだけ（灯体のくり抜きが外形をマスクする前提で大きめ）
+      h = Math.min(W*0.98/2/ASPECT, H*0.48); w = h*ASPECT; cy = H*0.5; dx = 0;
+    }
+
+    var blink = blinkT >= 0 ? Math.sin(Math.PI*Math.min(1,blinkT)) : 0;
+
+    // closure は「灯体の上辺から下辺までの何割を覆うか」。0=全開 / 1=閉じきり。
+    // 0 で頭打ちにして、開いているときは上まぶたを完全に画面外へ退かせる。
+    // オフセットを引かないと、平常時でも常に少し被った眠そうな目になる。
+    // 下まぶたは畳み込まず独立に動かす（畳み込むと我慢のとき目が消えてしまう）。
+    var closure  = clamp(Math.max(0, (1-openS)*0.80 - 0.20) + blink*1.10, 0, 1.05);
+    var lowRaise = clamp(lowerS*0.62 + blink*0.30, 0, 0.90);
+    var flare = (widenFlash*0.55 + emoFlash*0.25) * (RM ? 0.25 : 1);
+    // 呼吸ゆらぎ: 感情が強いほど速く脈打つ。無いと灯体が止まって見える。
+    var pulse = RM ? 0 : Math.sin(clock * (1.1 + emoI*3.6)) * (0.030 + emoI*0.050);
+
+    for (var side = -1; side <= 1; side += 2){
+      // 片目モード: 画面上のこの側が「物理的に指定された目」でなければ描かない
+      if (ONLY_EYE && side*VIEW_SIGN !== ONLY_EYE) continue;
+      var cx0 = W/2 + side*dx;
+      ex.save();
+      ex.translate(cx0, cy);
+      ex.scale(side, 1);                     // 以降は「外側 = +x」の座標で描く
+
+      var gx = gxS*VIEW_SIGN*side - convS;   // 寄り目: 外側＝+x なので、引くと目頭側へ寄る
+      // 横Gに負けるまぶた: 物理的な目の左右（画面の左右ではない）で判定する
+      var physSide = side*VIEW_SIGN;
+      var gDroop = Math.abs(gLeanS) * (Math.sign(gLeanS) === physSide ? 1 : 0.12);
+      var closureE = clamp(closure + gDroop*0.55, 0, 1.05);
+      // 灯体の外形: 3D 焼き込み時は実際のレンズ外形（上まぶたがあった領域もリフレクター＝可動域になる）
+      LENS = LENS_DEF; LENS_TOP = LENS_TOP_DEF; LENS_BOT = LENS_BOT_DEF;
+      var irisCY = IRIS_CY, gyGain = 0.28;
+      if (LENS_OVR && LENS_OVR.top && LENS_OVR.top.length > 4){
+        var os = ovrShape(side, W, H, cx0, cy, w, h); LENS = os.poly; LENS_TOP = os.top; LENS_BOT = os.bot;
+        // 虹彩の中心と縦の可動量は、その列の灯体の高さに合わせて伸ばす
+        var tD = edgeY(LENS_TOP_DEF, IRIS_CX), bD = edgeY(LENS_BOT_DEF, IRIS_CX), tO = edgeY(LENS_TOP, IRIS_CX), bO = edgeY(LENS_BOT, IRIS_CX);
+        var ratio = clamp((bO - tO) / Math.max(0.05, bD - tD), 1, 2.5);
+        irisCY = (tO + bO) / 2 - ((tD + bD) / 2 - IRIS_CY) * ratio; gyGain = 0.28 * ratio;
+      }
+      // 可動域は大きく取る。灯体からはみ出す分はクリップされるだけなので壊れない。
+      // 動きが小さいと「追っている」ことが伝わらない。
+      var ix = (IRIS_CX + gx*0.36)*w;
+      var iy = (irisCY + gyS*gyGain)*h;
+      // 'fixed' は赤を固定して黒目だけで表情を作る。
+      // 'scale' は赤ごと縮めて、絞ったときに灯体のシルバーを見せる。
+      var isc = (irisMode === 'scale' ? (0.44 + 0.56*irisD) : 1)
+              * (1 + pulse*0.10 + widenFlash*0.04);
+      var rx = IRIS_RX*w * isc;
+      var ry = IRIS_RY*h * isc;
+      // 赤が動かないぶん、表情は黒目の開き具合だけで作る。直径で約2倍変える。
+      var prx = rx*(0.22 + diaS*0.52);
+      var pry = ry*(0.28 + diaS*0.56);
+
+      // --- 光源アンカー ---
+      // 光源は「世界の左上」に固定。ex.scale(side,1) でミラーしているので、
+      // 世界座標の左 = ローカルでは -side。眼球（球体）の上を滑る反射は
+      // 視線に完全には追従しない（眼球が回っても光は動かない）ので、
+      // 追従は25%の視差だけにする。
+      var bx = IRIS_CX*w, by = IRIS_CY*h;
+      var hlx = bx + (ix - bx)*0.25 - 0.26*side*rx;
+      var hly = by + (iy - by)*0.25 - ry*0.24;
+
+      // 灯体の発光（輪郭の外へにじむぶん。クリップの外で焼く）
+      ex.globalCompositeOperation = 'lighter';
+      var bloom = ex.createRadialGradient(ix, iy, rx*0.4, ix, iy, w*1.15);
+      var ba = Math.max(0, 0.045 + emoI*0.065 + flare*0.28 + pulse*0.30);
+      bloom.addColorStop(0, 'rgba(255,48,36,'+ba.toFixed(3)+')');
+      bloom.addColorStop(0.5, 'rgba(255,48,36,'+(ba*0.30).toFixed(3)+')');
+      bloom.addColorStop(1, 'rgba(255,48,36,0)');
+      ex.beginPath(); ex.arc(ix, iy, w*1.15, 0, 7); ex.fillStyle = bloom; ex.fill();
+      ex.globalCompositeOperation = 'source-over';
+
+      // 灯体の地。ヘッドライトの素の面なので、暗い塗りではなく鏡面のシルバーにする。
+      lensPath(ex, w, h);
+      var body = ex.createLinearGradient(-w*0.55, -h*1.05, w*0.45, h*1.05);
+      body.addColorStop(0.00, '#f4f8fd');
+      body.addColorStop(0.16, '#d6dfea');
+      body.addColorStop(0.36, '#a3aebd');
+      body.addColorStop(0.56, '#6d7886');
+      body.addColorStop(0.76, '#414a56');
+      body.addColorStop(1.00, '#222831');
+      ex.fillStyle = body; ex.fill();
+
+      ex.save();
+      lensPath(ex, w, h);
+      ex.clip();
+
+      // 灯体全体にムラを乗せる（塗りに見えないように）
+      if (noisePat){
+        ex.save();
+        ex.globalCompositeOperation = 'overlay'; ex.globalAlpha = 0.24;
+        ex.fillStyle = noisePat; ex.fillRect(-w*1.2, -h*1.8, w*2.4, h*3.6);
+        ex.restore();
+      }
+
+      // ================= 灯体内部（ベゼル） =================
+      // 実車のヘッドライト内部は、円形の模様ではなく「灯体の輪郭に沿って
+      // 流れる帯状の面」でできている（プレス成形の金属化ベゼル）。
+      // 上縁と下縁の間を帯に区切り、面ごとに受ける光を変える。
+      // 折り目には谷の影と、光を拾う細いエッジ。装飾は描かず、面と折り目だけ。
+      var STRIPS = [0.00, 0.26, 0.55, 0.80, 1.00];        // 上縁からの深さで区切る
+      // デッサンと同じで、金属は最明部（ほぼ白）から最暗部（ほぼ黒）まで
+      // トーンの全域を使う。中間調だけで描くとプラスチックになる。
+      var SLUM   = [0.42, 1.08, 0.74, 0.26];
+      var UST = 20, UMIN = -1.25, UMAX = 1.25;
+      var stripY = function(u, f2){
+        var t = edgeY(LENS_TOP, u), b = edgeY(LENS_BOT, u);
+        return (t + f2*(b - t)) * h;
+      };
+      for (var st2 = 0; st2 < STRIPS.length - 1; st2++){
+        var f1 = STRIPS[st2], f2b = STRIPS[st2+1], sl = SLUM[st2];
+        ex.beginPath();
+        for (var uq = 0; uq <= UST; uq++){
+          var uu = UMIN + (UMAX-UMIN)*uq/UST;
+          var yy4 = stripY(uu, f1);
+          uq ? ex.lineTo(uu*w*1.04, yy4) : ex.moveTo(uu*w*1.04, yy4);
+        }
+        for (var uq2 = UST; uq2 >= 0; uq2--){
+          var uu2 = UMIN + (UMAX-UMIN)*uq2/UST;
+          ex.lineTo(uu2*w*1.04, stripY(uu2, f2b));
+        }
+        ex.closePath();
+        var sy1 = stripY(0, f1), sy2 = stripY(0, f2b);
+        var sg = ex.createLinearGradient(0, sy1, 0, sy2);
+        sg.addColorStop(0.00, 'rgb('+Math.min(255,Math.round(224*sl))+','+Math.min(255,Math.round(232*sl))+','+Math.min(255,Math.round(242*sl))+')');
+        sg.addColorStop(0.55, 'rgb('+Math.round(138*sl)+','+Math.round(148*sl)+','+Math.round(162*sl)+')');
+        sg.addColorStop(1.00, 'rgb('+Math.round(46*sl)+','+Math.round(52*sl)+','+Math.round(62*sl)+')');
+        ex.fillStyle = sg; ex.fill();
+      }
+
+      // 折り目: 谷の影（下側）と、光を拾うエッジ（上側）
+      for (var fb = 1; fb < STRIPS.length - 1; fb++){
+        var ff = STRIPS[fb];
+        ex.beginPath();
+        for (var uq3 = 0; uq3 <= UST; uq3++){
+          var uu3 = UMIN + (UMAX-UMIN)*uq3/UST;
+          var yy5 = stripY(uu3, ff);
+          uq3 ? ex.lineTo(uu3*w*1.04, yy5) : ex.moveTo(uu3*w*1.04, yy5);
+        }
+        ex.strokeStyle = 'rgba(0,0,0,.55)'; ex.lineWidth = h*0.028; ex.stroke();
+        ex.beginPath();
+        for (var uq4 = 0; uq4 <= UST; uq4++){
+          var uu4 = UMIN + (UMAX-UMIN)*uq4/UST;
+          var yy6 = stripY(uu4, ff) - h*0.020;
+          uq4 ? ex.lineTo(uu4*w*1.04, yy6) : ex.moveTo(uu4*w*1.04, yy6);
+        }
+        ex.strokeStyle = 'rgba(255,255,255,.16)'; ex.lineWidth = h*0.011; ex.stroke();
+      }
+
+      // 縦の分割: ベゼルは区画部品の集まり。継ぎ目は弓なりの曲線で1本ずつ膨らみが違う。
+      var SECU  = [-1.25, -1.00, -0.76, -0.53, -0.31, -0.10, 0.12, 0.35, 0.58, 0.81, 1.02, 1.25];
+      var SLUM2 = [0.86, 1.16, 0.84, 1.24, 0.92, 1.30, 0.88, 1.14, 0.94, 1.28, 1.00];
+      var quad = function(u1, u2){
+        ex.beginPath();
+        var QS = 6;
+        for (var qq = 0; qq <= QS; qq++){
+          var qu = u1 + (u2-u1)*qq/QS;
+          var qy = stripY(qu, 0);
+          qq ? ex.lineTo(qu*w*1.04, qy) : ex.moveTo(qu*w*1.04, qy);
+        }
+        for (var qq2 = QS; qq2 >= 0; qq2--){
+          var qu2 = u1 + (u2-u1)*qq2/QS;
+          ex.lineTo(qu2*w*1.04, stripY(qu2, 1));
+        }
+        ex.closePath();
+      };
+      for (var sc3 = 0; sc3 < SECU.length - 1; sc3++){
+        var lu = SLUM2[sc3];
+        quad(SECU[sc3], SECU[sc3+1]);
+        ex.fillStyle = lu > 1
+          ? 'rgba(255,255,255,' + ((lu-1)*0.50).toFixed(3) + ')'
+          : 'rgba(0,0,0,' + ((1-lu)*0.50).toFixed(3) + ')';
+        ex.fill();
+      }
+
+      // 継ぎ目は直線ではなく、面の膨らみに沿って弓なりに通す
+      var seam = function(su, xoff, bow){
+        var VS = 10;
+        ex.beginPath();
+        for (var vq = 0; vq <= VS; vq++){
+          var vf = vq/VS;
+          var vx = su*w + xoff - h*0.06*vf + bow*Math.sin(vf*Math.PI);
+          var vy = stripY(su, vf);
+          vq ? ex.lineTo(vx, vy) : ex.moveTo(vx, vy);
+        }
+      };
+      var BOWS = [0.060, 0.100, 0.075, 0.120, 0.088, 0.065, 0.105, 0.078, 0.115, 0.070];
+      for (var sc4 = 1; sc4 < SECU.length - 1; sc4++){
+        var su = SECU[sc4];
+        var bow = h*BOWS[sc4-1] * (su < 0 ? -1 : 1);
+        seam(su, 0, bow);
+        ex.strokeStyle = 'rgba(0,0,0,.48)'; ex.lineWidth = h*0.020; ex.stroke();
+        seam(su, h*0.018, bow);
+        ex.strokeStyle = 'rgba(255,255,255,.24)'; ex.lineWidth = h*0.009; ex.stroke();
+      }
+
+      // 鏡の映り込み: 区画ごとに「地平線」の高さと強さを変える。
+      // 一枚の帯で通すと単調な塗りに見える。面の向きが違えば、
+      // 同じ空でも映る位置も強さも変わり、映り込みは継ぎ目で段差を作る。
+      // [地平線の深さ, 空の強さ, 地面の濃さ, 芯の強さ]
+      var GLS = [
+        [0.34, 0.42, 0.22, 0.55], [0.46, 0.65, 0.34, 0.10], [0.30, 0.18, 0.12, 0.72],
+        [0.50, 0.48, 0.44, 0.30], [0.38, 0.30, 0.10, 1.00], [0.43, 0.58, 0.28, 0.05],
+        [0.33, 0.36, 0.18, 0.60], [0.48, 0.16, 0.50, 0.38], [0.36, 0.52, 0.14, 0.85],
+        [0.44, 0.34, 0.30, 0.22], [0.40, 0.44, 0.20, 0.50]
+      ];
+      var bandSec = function(u1, u2, fa, fb){
+        ex.beginPath();
+        var BS = 6;
+        for (var bq = 0; bq <= BS; bq++){
+          var bu = u1 + (u2-u1)*bq/BS;
+          var by3 = stripY(bu, fa);
+          bq ? ex.lineTo(bu*w*1.04, by3) : ex.moveTo(bu*w*1.04, by3);
+        }
+        for (var bq2 = BS; bq2 >= 0; bq2--){
+          var bu2 = u1 + (u2-u1)*bq2/BS;
+          ex.lineTo(bu2*w*1.04, stripY(bu2, fb));
+        }
+        ex.closePath();
+      };
+      for (var gi = 0; gi < SECU.length - 1; gi++){
+        var GH = GLS[gi % GLS.length];
+        var hf = GH[0];
+        // 空の映り込み（下端は硬く切れる）
+        bandSec(SECU[gi], SECU[gi+1], 0.03, hf);
+        var um = (SECU[gi] + SECU[gi+1])/2;
+        var sky2 = ex.createLinearGradient(0, stripY(um, 0.03), 0, stripY(um, hf));
+        sky2.addColorStop(0.00, 'rgba(255,255,255,' + GH[1].toFixed(3) + ')');
+        sky2.addColorStop(0.75, 'rgba(240,248,255,' + (GH[1]*0.45).toFixed(3) + ')');
+        sky2.addColorStop(0.97, 'rgba(235,244,255,' + (GH[1]*0.38).toFixed(3) + ')');
+        sky2.addColorStop(1.00, 'rgba(235,244,255,0)');
+        ex.fillStyle = sky2; ex.fill();
+        // 地平線直下の暗部
+        bandSec(SECU[gi], SECU[gi+1], hf, hf + 0.15);
+        ex.fillStyle = 'rgba(8,10,14,' + GH[2].toFixed(3) + ')'; ex.fill();
+      }
+
+      // 光沢の芯: 地平線に沿って走るが、区画ごとに強さが変わり、弱い区画では途切れる
+      ex.globalCompositeOperation = 'lighter';
+      var shineSec = function(u1, u2, f5, col, lws){
+        ex.beginPath();
+        var SS = 6;
+        for (var sq = 0; sq <= SS; sq++){
+          var su5 = u1 + (u2-u1)*sq/SS;
+          var sy5 = stripY(su5, f5);
+          sq ? ex.lineTo(su5*w*1.04, sy5) : ex.moveTo(su5*w*1.04, sy5);
+        }
+        ex.strokeStyle = col; ex.lineWidth = lws; ex.stroke();
+      };
+      for (var gi2 = 0; gi2 < SECU.length - 1; gi2++){
+        var GH2 = GLS[gi2 % GLS.length];
+        if (GH2[3] < 0.15) continue;
+        var hf2 = GH2[0];
+        shineSec(SECU[gi2], SECU[gi2+1], hf2 - 0.012, 'rgba(255,252,246,' + (GH2[3]*0.15).toFixed(3) + ')', h*0.075);
+        shineSec(SECU[gi2], SECU[gi2+1], hf2 - 0.010, 'rgba(255,255,255,' + (GH2[3]*0.85).toFixed(3) + ')', h*0.018);
+        // 一番強い区画は「純白の点」まで飛ばす。デッサンで最後に置く白と同じ
+        if (GH2[3] > 0.7){
+          var pu = (SECU[gi2] + SECU[gi2+1])/2;
+          ex.beginPath();
+          ex.arc(pu*w, stripY(pu, hf2 - 0.012), h*0.022, 0, 7);
+          ex.fillStyle = 'rgba(255,255,255,.95)'; ex.fill();
+          glow(ex, pu*w, stripY(pu, hf2 - 0.012), h*0.09, '255,255,255', 0.40);
+        }
+      }
+      // 下段の照り返し（路面・暖色）も区画で強弱を付ける
+      for (var gi3 = 0; gi3 < SECU.length - 1; gi3++){
+        var GH3 = GLS[(gi3 + 5) % GLS.length];
+        if (GH3[3] < 0.30) continue;
+        shineSec(SECU[gi3], SECU[gi3+1], 0.89, 'rgba(255,224,198,' + (GH3[3]*0.18).toFixed(3) + ')', h*0.028);
+      }
+      // 対角のホットストリーク: 鏡面が拾う一番強い光。ここだけ白を飛ばす
+      streak(ex, -w*0.34, -h*0.10, w*0.95, h*0.16, -0.34, 'rgba(255,255,255,.15)');
+      streak(ex, -w*0.30, -h*0.14, w*0.55, h*0.07, -0.34, 'rgba(255,255,255,.48)');
+      streak(ex, -w*0.28, -h*0.15, w*0.26, h*0.032, -0.34, 'rgba(255,255,255,.85)');
+      streak(ex,  w*0.42,  h*0.34, w*0.50, h*0.10, -0.30, 'rgba(250,252,255,.11)');
+      streak(ex,  w*0.10, -h*0.30, w*0.40, h*0.05, -0.38, 'rgba(255,255,255,.20)');
+      ex.globalCompositeOperation = 'source-over';
+
+      // プロジェクタの凹み: レンズはベゼルに開いた穴の奥に座っている。
+      // その接触影。これが無いと目が「置いてある」ように見える。
+      var bx2 = IRIS_CX*w, by2 = IRIS_CY*h;
+      var kx2 = IRIS_RX*w, ky2 = IRIS_RY*h;
+      ex.save();
+      ex.translate(bx2, by2); ex.scale(1, ky2/kx2);
+      var recess = ex.createRadialGradient(0, 0, kx2*0.92, 0, 0, kx2*1.55);
+      recess.addColorStop(0.00, 'rgba(0,0,0,.62)');
+      recess.addColorStop(0.45, 'rgba(0,0,0,.20)');
+      recess.addColorStop(1.00, 'rgba(0,0,0,0)');
+      ex.beginPath(); ex.arc(0, 0, kx2*1.6, 0, 7);
+      ex.fillStyle = recess; ex.fill();
+      ex.restore();
+
+      // 加工面のざらつき
+      if (noisePat){
+        ex.save();
+        ex.globalCompositeOperation = 'overlay'; ex.globalAlpha = 0.20;
+        ex.fillStyle = noisePat; ex.fillRect(-w*1.2, -h*1.8, w*2.4, h*3.6);
+        ex.restore();
+      }
+
+      // 鏡面のスイープ。銀の地を「塗り」ではなく「鏡」に見せるのはこれ。
+      ex.globalCompositeOperation = 'lighter';
+      var sweep = ex.createLinearGradient(-w*0.95, -h*1.0, w*0.55, h*1.0);
+      sweep.addColorStop(0.00, 'rgba(255,255,255,0)');
+      sweep.addColorStop(0.26, 'rgba(255,255,255,.13)');
+      sweep.addColorStop(0.38, 'rgba(255,255,255,.36)');
+      sweep.addColorStop(0.48, 'rgba(255,255,255,.07)');
+      sweep.addColorStop(0.66, 'rgba(255,255,255,.21)');
+      sweep.addColorStop(0.82, 'rgba(255,255,255,0)');
+      ex.fillStyle = sweep; ex.fillRect(-w*1.2, -h*1.8, w*2.4, h*3.6);
+      ex.globalCompositeOperation = 'source-over';
+
+      // 内部のクローム（奥から）
+      // ウインカーのスリット（目尻上端の琥珀）。写真に実在する要素なので残す
+      if (LENS === LENS_DEF){
+      poly(ex, AMBER, w, h);
+      var ag = ex.createLinearGradient(0, -h*0.95, 0, -h*0.60);
+      ag.addColorStop(0, 'rgba(238,214,150,.95)');
+      ag.addColorStop(1, 'rgba(148,116,60,.9)');
+      ex.fillStyle = ag; ex.fill();
+      poly(ex, AMBER, w, h);
+      ex.strokeStyle = 'rgba(0,0,0,.6)'; ex.lineWidth = Math.max(1, h*0.020); ex.stroke();
+      }
+
+      // 灯体の縁の落ち影。クリップ内なのでストロークの内側半分だけが残り、
+      // ハウジングの奥行き（縁がへこんでいる感じ）になる。
+      lensPath(ex, w, h);
+      ex.strokeStyle = 'rgba(0,0,0,.30)'; ex.lineWidth = h*0.22; ex.stroke();
+      lensPath(ex, w, h);
+      ex.strokeStyle = 'rgba(0,0,0,.45)'; ex.lineWidth = h*0.10; ex.stroke();
+
+      // レンズ表面の細かい横リブ（ポリカレンズの成形筋）
+      for (var rb = -0.92; rb < 1.0; rb += 0.155){
+        ex.beginPath();
+        ex.moveTo(-w*1.1, rb*h); ex.lineTo(w*1.1, (rb-0.07)*h);
+        ex.strokeStyle = 'rgba(255,255,255,.025)'; ex.lineWidth = h*0.013; ex.stroke();
+      }
+
+      // 内側の赤い照り返し
+      ex.globalCompositeOperation = 'lighter';
+      var inner = ex.createRadialGradient(ix, iy, rx*0.55, ix, iy, rx*2.1);
+      inner.addColorStop(0, 'rgba(255,52,36,'+(0.12+emoI*0.12+flare*0.26).toFixed(3)+')');
+      inner.addColorStop(1, 'rgba(255,52,36,0)');
+      ex.beginPath(); ex.arc(ix, iy, rx*2.1, 0, 7); ex.fillStyle = inner; ex.fill();
+      ex.globalCompositeOperation = 'source-over';
+
+      // 虹彩（赤い楕円リング）
+      var iris = ex.createRadialGradient(ix, iy - ry*0.25, prx*0.8, ix, iy, rx);
+      iris.addColorStop(0,    '#ff7a4e');
+      iris.addColorStop(0.30, '#f42a1e');
+      iris.addColorStop(0.74, '#b4101a');
+      iris.addColorStop(0.94, '#7a0a12');
+      iris.addColorStop(1,    '#3d040a');
+      ex.save();
+      ex.beginPath(); ex.ellipse(ix, iy, rx, ry, 0, 0, 7);
+      ex.fillStyle = iris; ex.fill();
+
+      // ガラス越しの横筋。写真の赤リングに走っている白い反射
+      ex.clip();
+
+      // --- 虹彩の繊維（2層）---
+      // 実物の虹彩は「うねった細い筋の束」。直線だと機械のスポークに見える。
+      // 暗い溝（4割）は隅角まで届き、明るい繊維は途中で消える。
+      var t0 = Math.min(0.90, prx/rx + 0.02);
+      for (var f = 0; f < FIBRE.length; f++){
+        var F = FIBRE[f];
+        var th = (f/FIBRE.length)*Math.PI*2 + (F[0]-0.5)*0.10;
+        var dark = F[1] < 0.42;
+        var aIn  = 0.26 + F[2]*0.12;                 // 瞳孔の下まで潜らせておく
+        var aOut = dark ? 0.965 : 0.86 + F[3]*0.09;
+        var ca = Math.cos(th), sa = Math.sin(th);
+        var mid = (aIn + aOut)/2, wob = (F[4]-0.5)*0.11;
+        ex.beginPath();
+        ex.moveTo(ix + ca*rx*aIn, iy + sa*ry*aIn);
+        ex.quadraticCurveTo(
+          ix + ca*rx*mid - sa*rx*wob,
+          iy + sa*ry*mid + ca*ry*wob,
+          ix + ca*rx*aOut, iy + sa*ry*aOut);
+        if (dark){
+          ex.strokeStyle = 'rgba(58,4,10,' + (0.10 + F[5]*0.20).toFixed(3) + ')';
+          ex.lineWidth = ry*(0.014 + F[5]*0.026);
+        } else {
+          ex.strokeStyle = F[5] > 0.6
+            ? 'rgba(255,158,118,' + (0.06 + F[5]*0.10).toFixed(3) + ')'
+            : 'rgba(226,60,36,'   + (0.08 + F[5]*0.12).toFixed(3) + ')';
+          ex.lineWidth = ry*(0.010 + F[5]*0.018);
+        }
+        ex.stroke();
+      }
+
+      // --- 瞳孔括約帯（collarette）---
+      // 瞳孔の少し外で繊維の密度が変わる段差。これがあると「層」に見える。
+      ex.beginPath();
+      for (var c2 = 0; c2 <= 40; c2++){
+        var thc = c2/40*Math.PI*2;
+        var rj = 1 + (FIBRE[(c2*2) % FIBRE.length][4] - 0.5)*0.10;
+        var rc = Math.min(0.84, t0 + 0.16)*rj;
+        var cx2 = ix + Math.cos(thc)*rx*rc, cy2 = iy + Math.sin(thc)*ry*rc;
+        c2 ? ex.lineTo(cx2, cy2) : ex.moveTo(cx2, cy2);
+      }
+      ex.closePath();
+      ex.strokeStyle = 'rgba(255,140,96,.13)'; ex.lineWidth = ry*0.030; ex.stroke();
+
+      // --- 隅角・輪部 ---
+      // 硬い線ではなく、外へ向かって焦げていく柔らかい暗環にする。
+      ex.save();
+      ex.translate(ix, iy); ex.scale(1, ry/rx);
+      var limb = ex.createRadialGradient(0, 0, rx*0.74, 0, 0, rx);
+      limb.addColorStop(0.00, 'rgba(40,2,8,0)');
+      limb.addColorStop(0.55, 'rgba(40,2,8,.30)');
+      limb.addColorStop(0.86, 'rgba(24,1,5,.60)');
+      limb.addColorStop(1.00, 'rgba(12,0,3,.80)');
+      ex.beginPath(); ex.arc(0, 0, rx, 0, 7);
+      ex.fillStyle = limb; ex.fill();
+      ex.restore();
+
+      // 隅角の上側はレンズの影が落ちて一段深い
+      ex.beginPath();
+      ex.ellipse(ix, iy, rx*0.93, ry*0.93, 0, Math.PI*1.10, Math.PI*1.86);
+      ex.strokeStyle = 'rgba(20,1,6,.35)'; ex.lineWidth = ry*0.075; ex.stroke();
+
+      ex.globalCompositeOperation = 'lighter';
+      // 隅角の溝に溜まる光（下側）
+      ex.beginPath();
+      ex.ellipse(ix, iy, rx*0.90, ry*0.90, 0, Math.PI*0.12, Math.PI*0.74);
+      ex.strokeStyle = 'rgba(255,120,84,.22)'; ex.lineWidth = ry*0.055; ex.stroke();
+
+      // --- 角膜（ガラスドーム）の研磨筋 ---
+      // 同心の細い弧。均一な赤面を「磨いたガラス」に見せる。
+      for (var g2 = 0; g2 < 5; g2++){
+        var rr = 0.34 + g2*0.13;
+        ex.beginPath();
+        ex.ellipse(ix, iy, rx*rr, ry*rr, 0, Math.PI*(1.05 + g2*0.04), Math.PI*(1.55 - g2*0.03));
+        ex.strokeStyle = 'rgba(255,222,208,' + (0.05 + (g2 % 2)*0.03).toFixed(3) + ')';
+        ex.lineWidth = ry*0.012;
+        ex.stroke();
+      }
+      // 上方から当たる広いツヤ（光源側に固定）
+      glow(ex, hlx, hly - ry*0.22, rx*0.80, '255,238,230', 0.13);
+      // ガラス越しの横筋。矩形だと貼り付けに見えるので、わずかに傾けた帯にする
+      streak(ex, ix - rx*0.52, iy + ry*0.34, rx*0.78, ry*0.115, -0.10, 'rgba(255,212,202,.30)');
+      streak(ex, ix - rx*0.34, iy + ry*0.60, rx*0.60, ry*0.090, -0.08, 'rgba(255,226,218,.22)');
+      streak(ex, ix + rx*0.42, iy - ry*0.60, rx*0.62, ry*0.080, -0.12, 'rgba(255,206,196,.16)');
+
+      ex.restore();
+
+      // 虹彩のリムライト。上は光源、下は路面からの照り返し
+      ex.beginPath();
+      ex.ellipse(ix, iy, rx*0.98, ry*0.98, 0, Math.PI*1.12, Math.PI*1.92);
+      ex.strokeStyle = 'rgba(255,236,226,.40)'; ex.lineWidth = ry*0.055; ex.stroke();
+      ex.beginPath();
+      ex.ellipse(ix, iy, rx*0.96, ry*0.96, 0, Math.PI*0.18, Math.PI*0.82);
+      ex.strokeStyle = 'rgba(255,148,124,.20)'; ex.lineWidth = ry*0.038; ex.stroke();
+
+      // 瞳孔
+      var pup = ex.createRadialGradient(ix, iy - pry*0.3, prx*0.15, ix, iy, prx);
+      pup.addColorStop(0, '#141a24');
+      pup.addColorStop(0.7, '#05070c');
+      pup.addColorStop(1, '#020305');
+      ex.beginPath(); ex.ellipse(ix, iy, prx, pry, 0, 0, 7);
+      ex.fillStyle = pup; ex.fill();
+
+      // --- 水晶体 ---
+      // 瞳孔の奥にもう一枚ガラスがある感じを出す。
+      // 少し小さい冷たい円盤 → 縁のリング → 底に集まるコースティクス、の3枚。
+      ex.save();
+      ex.beginPath(); ex.ellipse(ix, iy, prx, pry, 0, 0, 7); ex.clip();
+      var lens = ex.createRadialGradient(ix - prx*0.2, iy - pry*0.3, prx*0.08, ix, iy, prx*0.88);
+      lens.addColorStop(0,    'rgba(96,124,160,.20)');
+      lens.addColorStop(0.55, 'rgba(40,58,84,.12)');
+      lens.addColorStop(1,    'rgba(10,14,22,0)');
+      ex.beginPath(); ex.ellipse(ix, iy, prx*0.88, pry*0.88, 0, 0, 7);
+      ex.fillStyle = lens; ex.fill();
+      ex.beginPath(); ex.ellipse(ix, iy, prx*0.80, pry*0.80, 0, 0, 7);
+      ex.strokeStyle = 'rgba(150,178,212,.13)'; ex.lineWidth = pry*0.05; ex.stroke();
+      ex.globalCompositeOperation = 'lighter';
+      ex.beginPath(); ex.ellipse(ix, iy, prx*0.66, pry*0.66, 0, Math.PI*0.22, Math.PI*0.80);
+      ex.strokeStyle = 'rgba(255,176,132,.30)'; ex.lineWidth = pry*0.09; ex.stroke();
+      ex.restore();
+
+      // 瞳孔のふち。濡れて見えるかどうかはここで決まる
+      ex.beginPath();
+      ex.ellipse(ix, iy, prx*0.97, pry*0.97, 0, Math.PI*1.10, Math.PI*1.90);
+      ex.strokeStyle = 'rgba(226,238,255,.22)'; ex.lineWidth = pry*0.10; ex.stroke();
+
+
+      ex.save();
+      ex.beginPath(); ex.ellipse(ix, iy, rx*0.985, ry*0.985, 0, 0, 7); ex.clip();
+      ex.globalCompositeOperation = 'lighter';
+      // --- 走行で流れるハイライト（魚眼＝ミラーボール式の放射フロー）---
+      // 前進中、正面の景色は凸面鏡の中心（拡張の焦点）に映り、時間とともに
+      // 放射状に外へ広がる。ミラーボールの写像 ρ=sin(α/2) に合わせて、
+      // 中心から加速して飛び出し、縁では球面の圧縮で減速・収束して消える。
+      // 角膜は赤リングも黒目も一枚で覆う面なので、瞳孔の上にも乗る。
+      if (flowS > 0.02){
+        // 各スポークの方位（固定）と位相オフセット。左右の目はミラーで対称になる
+        var SPK = [[0.30,0.00],[1.25,0.37],[2.30,0.68],[3.55,0.15],[4.45,0.52],[5.50,0.83]];
+        for (var fl = 0; fl < SPK.length; fl++){
+          var th2 = SPK[fl][0];
+          var fu = (flowPh*0.9 + SPK[fl][1]) % 1;
+          var rho1 = Math.sin(fu * Math.PI/2);            // 中心 0 → 縁 1
+          var spd  = Math.cos(fu * Math.PI/2);            // 速度（縁で圧縮）
+          var rho2 = Math.min(0.99, rho1 + 0.06 + 0.22*spd);  // 速いほど長く伸びる
+          var ct2 = Math.cos(th2), st2 = Math.sin(th2);
+          // 光源（世界の左上）を向くスポークほど明るい
+          var lgt = 0.60 + 0.55*Math.max(0, (ct2*side)*(-0.71) + st2*(-0.71));
+          var fa = (0.09 + flowS*0.52) * Math.sin(fu*Math.PI) * lgt;
+          var x1 = ix + ct2*rx*rho1, y1 = iy + st2*ry*rho1;
+          var x2 = ix + ct2*rx*rho2, y2 = iy + st2*ry*rho2;
+          var lg2 = ex.createLinearGradient(x1, y1, x2, y2);
+          lg2.addColorStop(0,   'rgba(255,240,234,0)');
+          lg2.addColorStop(0.45,'rgba(255,240,234,' + fa.toFixed(3) + ')');
+          lg2.addColorStop(1,   'rgba(255,240,234,0)');
+          ex.strokeStyle = lg2;
+          ex.lineWidth = ry * (0.028 + 0.070*spd);        // 縁ほど細く
+          ex.lineCap = 'round';
+          ex.beginPath(); ex.moveTo(x1, y1); ex.lineTo(x2, y2); ex.stroke();
+        }
+        ex.lineCap = 'butt';
+      }
+      ex.globalCompositeOperation = 'source-over';
+      ex.restore();
+
+      // 主ハイライト（キャッチライト）と、赤リングからの照り返し。
+      // どちらも光源に対して固定（視線には25%の視差だけ）。眼球が動いても
+      // ハイライトはその場に残る＝球体に見える鍵。走行中はわずかに揺らす。
+      var hjx = flowS * prx * 0.05 * Math.sin(clock*15.0);
+      var hjy = flowS * pry * 0.04 * Math.sin(clock*11.3 + 1.7);
+      var chx = hlx + hjx, chy = hly + hjy;
+      ex.globalCompositeOperation = 'lighter';
+      glow(ex, chx, chy, prx*0.56, '236,246,255', 0.58);
+      // 反対側の下（世界の右下）: 路面・赤リングからの照り返し
+      glow(ex, bx + (ix - bx)*0.25 + 0.30*side*rx, by + (iy - by)*0.25 + ry*0.34,
+           prx*0.34, '255,138,110', 0.34);
+      ex.globalCompositeOperation = 'source-over';
+      ex.beginPath();
+      ex.ellipse(chx, chy, prx*0.15, pry*0.15, 0, 0, 7);
+      ex.fillStyle = 'rgba(255,255,255,.92)'; ex.fill();
+      // キャッチライトの衛星（球面ドームの二次反射）。主光の斜め下に小さく
+      ex.beginPath();
+      ex.ellipse(chx + prx*0.16*side*(-1), chy + pry*0.22, prx*0.055, pry*0.055, 0, 0, 7);
+      ex.fillStyle = 'rgba(236,246,255,.55)'; ex.fill();
+
+      // 見開きの一瞬だけ、虹彩の外に白いリングが弾ける（ドリフト突入の合図）
+      if (widenFlash > 0.01){
+        ex.beginPath();
+        ex.ellipse(ix, iy, rx*(1.02+(1-widenFlash)*0.16), ry*(1.02+(1-widenFlash)*0.16), 0, 0, 7);
+        ex.strokeStyle = 'rgba(255,226,214,'+(widenFlash*0.5).toFixed(3)+')';
+        ex.lineWidth = ry*0.07*widenFlash + 1; ex.stroke();
+      }
+
+      // --- カバーガラス（アウターレンズ）面を流れる映り込み ---
+      // カバーは単純な球ではない: 目頭→瞳の中心までは「平面」、
+      // 瞳の中心→目尻は車体へ回り込む「曲面」。
+      // 反射は目頭から現れ、平面部を等速でまっすぐ渡り、
+      // 瞳中心を過ぎると弧を描きながら圧縮されて目尻へ抜ける。
+      if (flowS > 0.02){
+        ex.globalCompositeOperation = 'lighter';
+        var xHead = -0.97*w, xC = IRIS_CX*w, xTail = 0.97*w;
+        var SPLIT = 0.42;                   // 行程に占める平面部の割合
+        var PHI = 1.30;                     // 曲面部の巻き込み角 [rad]
+        for (var fc = 0; fc < 3; fc++){
+          var fuc = (flowPh*0.55 + fc/3 + 0.21) % 1;
+          var env = Math.sin(fuc*Math.PI);  // 端で必ず0 → 出現・消滅がなめらか
+          if (env < 0.03) continue;
+          var xB, bowK, wK;
+          if (fuc < SPLIT){
+            // 平面部: 直線・等速・まっすぐ立った帯
+            xB = xHead + (xC - xHead)*(fuc/SPLIT);
+            bowK = 0; wK = 1;
+          } else {
+            // 曲面部: sin 写像で徐々に減速しつつ、弧を強めながら目尻へ
+            var ph2 = (fuc - SPLIT)/(1 - SPLIT)*PHI;
+            xB = xC + (xTail - xC)*Math.sin(ph2)/Math.sin(PHI);
+            bowK = Math.sin(ph2);
+            wK = Math.cos(ph2)*0.75 + 0.25;
+          }
+          var laC = (0.075 + flowS*0.33) * env * wK;
+          ex.strokeStyle = 'rgba(226,238,252,' + laC.toFixed(3) + ')';
+          ex.lineWidth = h * (0.070 + 0.130*wK);
+          ex.beginPath();
+          for (var sc = 0; sc <= 12; sc++){
+            var tvc = (sc/12*2 - 1) * 1.15;
+            // 平面部では垂直な帯。曲面部は上下の端が外側へ逃げる弧になる
+            var pxc = xB + bowK * (1 - Math.cos(tvc)) * w * 0.16;
+            var pyc = -h*0.01 + h*0.42 * Math.sin(tvc);
+            sc ? ex.lineTo(pxc, pyc) : ex.moveTo(pxc, pyc);
+          }
+          ex.stroke();
+        }
+        ex.globalCompositeOperation = 'source-over';
+      }
+
+      // レンズ表面のガラス反射。視線では動かない＝光源側の反射なので固定位置に置く
+      ex.globalCompositeOperation = 'lighter';
+      glow(ex, w*0.30, -h*0.44, h*0.42, '214,232,255', 0.05);
+      var glass = ex.createLinearGradient(-w, -h*0.9, w*0.4, h);
+      glass.addColorStop(0.00, 'rgba(214,232,255,0)');
+      glass.addColorStop(0.34, 'rgba(214,232,255,.03)');
+      glass.addColorStop(0.46, 'rgba(232,242,255,.055)');
+      glass.addColorStop(0.58, 'rgba(214,232,255,.02)');
+      glass.addColorStop(1.00, 'rgba(214,232,255,0)');
+      ex.fillStyle = glass; ex.fillRect(-w*1.1, -h*1.1, w*2.2, h*2.2);
+      ex.globalCompositeOperation = 'source-over';
+
+      // --- ウィンカー／ポリス（まぶたより下の層。灯体の下エッジ＝涙袋） ---
+      if (!NOLAMP) {
+        var sg = P && P.signal, lampW = (P && P.lampWidth) || 1, seqOn = !!(P && P.lampSeq);
+        var mine = sg && (sg.side === 'H' || (sg.side === 'L' && physSide === -1) || (sg.side === 'R' && physSide === 1));
+        var SEG = 12, LAMP_U0 = -0.76, base = h * 0.075 * lampW;
+        // 帯: 下エッジに沿って目頭（u=-1）から目尻（u=+1）まで。目尻ほど太い（実車の意匠）。
+        // 灯体の端は上下の縁が寄るので、帯の厚みはその場所の灯体の高さで頭打ちにして端まで見えるようにする
+        // 目尻（u>0.72）は灯体の外縁が立っているので、帯もそこで一気に太くなる（実車の意匠）
+        var thick = function(u){ var t0 = edgeY(LENS_TOP, u), b0 = edgeY(LENS_BOT, Math.min(u, 0.88)); var avail = Math.max(0.02, (b0 - t0)) * h; var k = base * (0.45 + 1.15 * (u + 1) / 2); if (u > 0.72) k += (u - 0.72) / 0.16 * avail * 0.55; return Math.min(k, avail * 0.92); };
+        var bot = function(u){ return (edgeY(LENS_BOT, Math.min(u, 0.88)) - 0.03) * h; };   // 角の丸みぶん内側
+        var top = function(u){ return bot(u) - thick(u); };
+        // ポリス: 帯だけを赤（左目）／青（右目）でストロボ。ウィンカーより優先
+        var po = P && P.police, poLit = false, poCol = null;
+        if (po){ var pp = po.ph || 0, isL = physSide === -1; poLit = isL ? ((pp >= 0 && pp < 0.12) || (pp >= 0.2 && pp < 0.32)) : ((pp >= 0.5 && pp < 0.62) || (pp >= 0.7 && pp < 0.82)); poCol = isL ? ['rgb(255,16,16)', 'rgba(255,30,30,.95)'] : ['rgb(20,70,255)', 'rgba(40,90,255,.95)']; }
+        for (var sgi = 0; sgi < SEG; sgi++){
+          var ua = LAMP_U0 + (0.88 - LAMP_U0) * sgi / SEG, ub = LAMP_U0 + (0.88 - LAMP_U0) * (sgi + 1) / SEG;   // 目頭側は先端に入れない（LAMP_U0）→ 目尻 0.88
+          var lit = false, col = ['rgb(255,112,0)', 'rgba(255,90,0,.9)'];   // オレンジ（アンバー）
+          if (po){ lit = poLit; col = poCol; }
+          else if (mine && sg.on){ lit = seqOn ? ((sg.ph || 0) * 1.25 >= (sgi + 1) / SEG) : true; }   // シーケンシャル: 目頭→目尻へ流れる
+          ex.beginPath();
+          var N5 = 4;
+          for (var k5 = 0; k5 <= N5; k5++){ var uu = ua + (ub - ua) * k5 / N5; k5 ? ex.lineTo(uu * w * 1.02, top(uu)) : ex.moveTo(uu * w * 1.02, top(uu)); }
+          for (var k6 = N5; k6 >= 0; k6--){ var uu2 = ua + (ub - ua) * k6 / N5; ex.lineTo(uu2 * w * 1.02, bot(uu2)); }
+          ex.closePath();
+          if (lit){
+            ex.save(); ex.shadowColor = col[1]; ex.shadowBlur = h * 0.08; ex.fillStyle = col[0]; ex.fill(); ex.restore();   // 通常合成（lighter だと黄色に飛ぶ）
+          }   // 消灯時は何も描かない（リフレクターがそのまま見える）
+        }
+      }
+
+      // --- 上まぶた（車体色）---
+      // 全開（closure 0）のときは、傾きや縁線の分も含めてまぶたがリフレクターに一切かからない高さまで持ち上げる。
+      // 閉じ始めると持ち上げは消える（closure 0.25 で 0）ので、表情の傾きはそのまま残る
+      var lidLift = (Math.abs(tiltS) * 1.04) * h + Math.max(1.5, h*0.016) / 2 + 1;
+      var lidLiftK = Math.max(0, 1 - closureE / 0.25); lidLift *= lidLiftK;
+      function lidY(u){
+        var t = edgeY(LENS_TOP, u), b = edgeY(LENS_BOT, u);
+        // 縁のふくらみも closure に比例させる。でないと全開でも薄く被ってしまう
+        var bulge = 0.07 * Math.max(0, 1 - u*u) * Math.min(1, closureE*2.2);
+        // Gに負ける側は外側（目尻）から垂れる: u>0（外側）ほど余分に下がる
+        var sag = gDroop * 0.18 * Math.max(0, u + 0.3);
+        return (t + closureE*(b - t) + bulge + sag - tiltS*u) * h - lidLift;   // tilt+ で目頭が下がる
+      }
+      var STEP = 24, U0 = -1.25, U1 = 1.25;
+      ex.beginPath();
+      ex.moveTo(-w*1.3, -h*1.9);
+      ex.lineTo( w*1.3, -h*1.9);
+      for (var q = STEP; q >= 0; q--){
+        var u = U0 + (U1-U0)*q/STEP;
+        ex.lineTo(u*w*1.04, lidY(u));
+      }
+      ex.closePath();
+      // 3D 焼き込み時: 全開ならまぶたは描かない（上限がレンズ上に見えないように）。閉じ始めると黒が立ち上がる
+      ex.fillStyle = NOLAMP ? 'rgba(0,0,0,' + Math.min(1, closureE / 0.08).toFixed(3) + ')' : '#000'; ex.fill();
+
+      ex.beginPath();
+      for (var q2 = 0; q2 <= STEP; q2++){
+        var u2 = U0 + (U1-U0)*q2/STEP;
+        var yy = lidY(u2);
+        q2 ? ex.lineTo(u2*w*1.04, yy) : ex.moveTo(u2*w*1.04, yy);
+      }
+      ex.strokeStyle = 'rgba(158,176,196,' + (0.24 * (1 - lidLiftK)).toFixed(3) + ')';   // 全開時は縁線も消す（まぶたの上限が見えないように）
+      ex.lineWidth = Math.max(1.5, h*0.016); if (lidLiftK < 1) ex.stroke();
+
+      // --- 下まぶた ---
+      // 上まぶたを深く下ろすと目が消えてしまうので、細める役はこちらに持たせる。
+      // 上が目頭を落とすとき、下は目頭側が持ち上がって挟み込む。
+      if (lowRaise > 0.012){
+        var lowY = function(u){
+          var t = edgeY(LENS_TOP, u), b = edgeY(LENS_BOT, u);
+          var bul = -0.05 * Math.max(0, 1 - u*u) * Math.min(1, lowRaise*3);
+          return (b - lowRaise*(b - t) + bul + tiltS*0.40*u) * h;
+        };
+        ex.beginPath();
+        ex.moveTo(-w*1.3, h*2.4);
+        ex.lineTo( w*1.3, h*2.4);
+        for (var q3 = STEP; q3 >= 0; q3--){
+          var u3 = U0 + (U1-U0)*q3/STEP;
+          ex.lineTo(u3*w*1.04, lowY(u3));
+        }
+        ex.closePath();
+        ex.fillStyle = '#000'; ex.fill();
+
+        ex.beginPath();
+        for (var q4 = 0; q4 <= STEP; q4++){
+          var u4 = U0 + (U1-U0)*q4/STEP;
+          var yy2 = lowY(u4);
+          q4 ? ex.lineTo(u4*w*1.04, yy2) : ex.moveTo(u4*w*1.04, yy2);
+        }
+        ex.strokeStyle = 'rgba(158,176,196,.18)';
+        ex.lineWidth = Math.max(1.2, h*0.013); ex.stroke();
+      }
+
+      ex.restore();
+
+      ex.restore();
+    }
+
+    if (!ONLY_EYE) drawCaption(h, cy);
+  }
+
+  // 感情語は目の下に小さく。非エンジニアに「解釈している」ことを伝える要なので消さない。
+  function drawCaption(h, cy){
+    var fs = Math.round(Math.min(W*0.030, H*0.070));
+    var y = Math.min(H - fs*0.9, cy + h*1.05 + fs*1.4);
+    var col = EMO_COLOR[emo] || '#6b7480';
+
+    ex.textAlign = 'center'; ex.textBaseline = 'middle';
+    ex.font = '600 ' + fs + 'px "Noto Sans JP","Hiragino Sans",sans-serif';
+    ex.fillStyle = col;
+    ex.globalAlpha = 0.55 + emoI*0.45;
+    ex.fillText(emo, W/2, y);
+    ex.globalAlpha = 1;
+
+    // 強度バー
+    var bw = fs*3.2*clamp(emoI, 0.05, 1);
+    ex.fillStyle = col; ex.globalAlpha = 0.35;
+    ex.fillRect(W/2 - bw/2, y + fs*0.78, bw, Math.max(1.5, fs*0.045));
+    ex.globalAlpha = 1;
+    ex.textAlign = 'start'; ex.textBaseline = 'alphabetic';
+
+    if (H > W){
+      ex.textAlign = 'center';
+      ex.font = Math.round(fs*0.5) + 'px "Noto Sans JP",sans-serif';
+      ex.fillStyle = '#454c55';
+      ex.fillText('端末を横向きにしてください', W/2, H*0.94);
+      ex.textAlign = 'start';
+    }
+  }
+
+  /* ================= ループ ================= */
+  var prev = performance.now();
+  function frame(now){
+    var dt = clamp((now-prev)/1000, 1/1000, 0.25); prev = now;
+    if (LOCAL){ var lm = LOCAL(dt); if (lm) ingest(lm); }
+    var stale = (now - lastMsgAt) > STALE_MS;
+
+    if (blinkT >= 0){
+      blinkT += dt/BLINK_SEC;
+      if (blinkT >= 1) blinkT = -1;
+    }
+    clock += dt;
+    // ハイライトの流れ: 速いほど速く流れる（完全停止では止まる）
+    flowPh = (flowPh + dt * flowS * 1.35) % 1;
+    widenFlash = lp(widenFlash, 0, dt, 0.38);
+    emoFlash   = lp(emoFlash,   0, dt, 0.45);
+
+    if (!stale && P){
+      flowS  = lp(flowS, P.gloss ? (P.flow || 0) : 0, dt, 0.30);   // 流れる光沢は設定（gloss）が ON のときだけ
+      openS  = lp(openS,  P.lid.upper.open,  dt, 0.045);
+      tiltS  = lp(tiltS,  P.lid.upper.tilt,  dt, 0.060);
+      lowerS = lp(lowerS, P.lid.lower.raise, dt, 0.060);
+      gLeanS = lp(gLeanS, P.lid.gLean || 0, dt, 0.12);
+      diaS   = lp(diaS,   P.pupil.dia,       dt, 0.085);
+      if (P.iris) irisD = lp(irisD, P.iris.dia, dt, 0.110);
+      gxS    = lp(gxS,    P.gaze.x,          dt, 0.035);
+      convS  = lp(convS,  P.gaze.conv || 0,  dt, 0.08);
+      gyS    = lp(gyS,    P.gaze.y,          dt, 0.035);
+      emo    = P.emotion.name;
+      emoI   = P.emotion.intensity;
+      idleT  = 0;
+    } else {
+      // ---- 自律アイドル（フェイルセーフ）----
+      idleT += dt;
+      flowS = lp(flowS, 0, dt, 0.6);
+      openS  = lp(openS, 0.58 + Math.sin(idleT*0.9)*0.05, dt, 0.35);
+      tiltS  = lp(tiltS, -0.09, dt, 0.40);
+      lowerS = lp(lowerS, 0.02, dt, 0.40);
+      gLeanS = lp(gLeanS, 0, dt, 0.30);
+      diaS   = lp(diaS,  0.40,  dt, 0.40);
+      irisD  = lp(irisD, 0.30,  dt, 0.45);
+
+      idleGt -= dt;
+      if (idleGt <= 0){
+        idleGt = 1.4 + Math.random()*2.4;
+        idleGx = (Math.random()*2-1)*0.40;
+        idleGy = (Math.random()*2-1)*0.20;
+      }
+      gxS = lp(gxS, idleGx, dt, 0.22);
+      gyS = lp(gyS, idleGy, dt, 0.22);
+
+      idleBlink -= dt;
+      if (idleBlink <= 0){ triggerBlink(); idleBlink = 2.4 + Math.random()*3.0; }
+
+      emo = '待機'; emoI = 0.25;
+    }
+
+    if (emo !== prevEmo){ prevEmo = emo; emoFlash = 1; }
+
+    drawEyes();
+
+    if (hudOn){
+      var d = P && P.debug;
+      $('hud').textContent =
+        'ws ' + (sock && sock.readyState===1 ? 'open' : LOCAL ? 'local' : 'closed') +
+        '   ' + rate + 'Hz   frames ' + msgCount + (stale ? '   [IDLE]' : '') + '\n' +
+        'emo ' + emo + ' ' + emoI.toFixed(2) +
+        '   open ' + openS.toFixed(2) + ' tilt ' + tiltS.toFixed(2) + ' low ' + lowerS.toFixed(2) + '\n' +
+        'gaze ' + gxS.toFixed(2) + ',' + gyS.toFixed(2) + '   pupil ' + diaS.toFixed(2) +
+        (d ? '\nbeta ' + d.beta + '  yaw ' + d.yaw + '  lat ' + d.lat + '  lon ' + d.lon : '');
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  /* ================= 全画面・スリープ抑止 ================= */
+  var wakeLock = null;
+  function keepAwake(){
+    if (!('wakeLock' in navigator)) return;
+    navigator.wakeLock.request('screen').then(function(w){
+      wakeLock = w;
+      w.addEventListener('release', function(){ wakeLock = null; });
+    }).catch(function(){});
+  }
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'visible' && !wakeLock) keepAwake();
+  });
+
+  function goFullscreen(){
+    var el = document.documentElement;
+    var fn = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (fn) { try { fn.call(el, {navigationUI:'hide'}); } catch(_){ try{ fn.call(el); }catch(__){} } }
+    if (screen.orientation && screen.orientation.lock){
+      screen.orientation.lock('landscape').catch(function(){});
+    }
+  }
+
+  setView(VIEW_SIGN);
+  if (ONLY_EYE || /[?&]bare=1/.test(location.search)){   // はめ込み用: ボタンと起動ベールを出さない
+    document.getElementById('viewBtn').style.display = 'none';
+    document.getElementById('veil').classList.add('gone');
+  }
+  document.getElementById('viewBtn').addEventListener('click', function(e){
+    e.stopPropagation(); setView(-VIEW_SIGN);
+  });
+  document.addEventListener('keydown', function(e){ if (e.key === 'm' || e.key === 'M') setView(-VIEW_SIGN); });
+
+  // プレビュー（表情エディタ）: 親ページから postMessage で1フレーム分を受け取って描く。
+  // ?preview=1 のときはサーバのフレームを無視し、渡されたフレームを保持し続ける
+  var PREVIEW = /[?&]preview=1/.test(location.search);
+  window.addEventListener('message', function(ev){
+    var d = ev.data || {};
+    if (d.type === 'frame' && d.P){ P = d.P; lastMsgAt = performance.now(); }
+    if (d.type === 'lens'){ LENS_OVR = d.top ? { top: d.top, bot: d.bot } : null; }   // 3D 側から実際のレンズ外形
+  });
+  if (PREVIEW) setInterval(function(){ if (P) lastMsgAt = performance.now(); }, 200);
+
+  var hudOn = false, lastTap = 0;
+  document.addEventListener('click', function(){
+    var now = performance.now();
+    if (now - lastTap < 320){
+      hudOn = !hudOn;
+      $('hud').classList.toggle('on', hudOn);
+      lastTap = 0;
+      return;
+    }
+    lastTap = now;
+    $('veil').classList.add('gone');
+    goFullscreen();
+    keepAwake();
+  });
+
+  if (LOCAL){
+    // ローカル再生では待つ理由がないので勝手に始める（全画面だけはタップが要る）
+    $('dot').classList.add('on');
+    $('veil').querySelector('div').textContent = 'ローカル再生モード ／ タップで全画面';
+    setTimeout(function(){ $('veil').classList.add('gone'); }, 1400);
+  } else {
+    if (!PREVIEW) connect();   // 共有版: プレビュー（親からのフレーム）だけ。サーバには繋がない
+  }
+})();
+</script>
+</html>
