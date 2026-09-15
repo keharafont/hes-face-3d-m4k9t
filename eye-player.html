@@ -1065,7 +1065,10 @@
 
   /* ================= ループ ================= */
   var prev = performance.now();
+  var lastDrawAt = 0;
   function frame(now){
+    if (PREVIEW && now - lastDrawAt < 28){ requestAnimationFrame(frame); return; }   // プレビュー（3D 焼き込み・エディタ）は 30fps で十分
+    lastDrawAt = now;
     var dt = clamp((now-prev)/1000, 1/1000, 0.25); prev = now;
     if (LOCAL){ var lm = LOCAL(dt); if (lm) ingest(lm); }
     var stale = (now - lastMsgAt) > STALE_MS;
@@ -1135,6 +1138,7 @@
         (d ? '\nbeta ' + d.beta + '  yaw ' + d.yaw + '  lat ' + d.lat + '  lon ' + d.lon : '');
     }
 
+    window.__frameNo = (window.__frameNo || 0) + 1;   // 3D 側が「描き直されたか」を見る
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

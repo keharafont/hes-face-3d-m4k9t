@@ -73,7 +73,7 @@ if (PREVIEW){   // 表情エディタから使う: 目玉プレイヤーはプ�
 if (EMBED){ $('bar').style.display = 'none'; $('hint').style.display = 'none'; document.body.style.background = '#000'; }
 const view = $('view');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.setPixelRatio(Math.min(EMBED ? 1.25 : 2, devicePixelRatio));   // 埋め込み（共有版）は描画負荷を抑える
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
 view.appendChild(renderer.domElement);
@@ -148,7 +148,8 @@ const LIVE = Object.assign({}, LIVE_DEF);
 try { Object.assign(LIVE, JSON.parse(localStorage.getItem('model-live') || '{}')); } catch(_){}
 if (LIVE.v !== 2){ LIVE.outR = null; LIVE.outL = null; LIVE.v = 2; }   // 旧版の保存値: 目尻の向きは自動判定に戻す
 const liveCv = { R: document.createElement('canvas'), L: document.createElement('canvas') }, liveTex = {};
-['R', 'L'].forEach((side) => { liveCv[side].width = 1024; liveCv[side].height = 1024; liveTex[side] = new THREE.CanvasTexture(liveCv[side]); liveTex[side].flipY = false; liveTex[side].colorSpace = THREE.SRGBColorSpace; });
+const TEX = 768;   // 目玉キャンバスは 640px 幅なので 768 で情報は落ちない（1024 より転送・描画が軽い）。座標は 1024 系のまま transform で縮める
+['R', 'L'].forEach((side) => { liveCv[side].width = TEX; liveCv[side].height = TEX; liveTex[side] = new THREE.CanvasTexture(liveCv[side]); liveTex[side].flipY = false; liveTex[side].colorSpace = THREE.SRGBColorSpace; });
 function liveApply(){ ['R', 'L'].forEach((side) => { const m = eyeMesh[side]; if (!m) return; if (liveOn){ m.material.map = liveTex[side]; m.material.emissiveMap = liveTex[side]; m.material.emissiveIntensity = 0.8; } else { m.material.map = EYE_TEX[side][eyeState[side]]; m.material.emissiveMap = m.material.map; m.material.emissiveIntensity = 0.55; } m.material.needsUpdate = true; }); }
 // 実際のレンズ外形（UV マスク）を目玉プレイヤーに渡す: 目玉プレイヤーはこの外形で灯体を描くので、
 // 2D の灯体より高いところ（上まぶたが見えていた領域）もリフレクターと可動域になる
@@ -162,14 +163,24 @@ function sendLens(){
     try { fr.contentWindow.postMessage({ type: 'lens', top, bot }, '*'); } catch(_){}
   });
 }
+const liveFrameNo = { R: -1, L: -1 }, baseCache = {};
+let lastTickAt = 0;
 function liveTick(){
   if (!liveOn) return;
-  if (performance.now() - lensSentAt > 1000){ lensSentAt = performance.now(); sendLens(); }
+  const now = performance.now();
+  if (now - lastTickAt < 28) return;   // 焼き込みは 30fps 上限（目玉プレイヤー自体が 30fps）
+  lastTickAt = now;
+  if (now - lensSentAt > 1000){ lensSentAt = now; sendLens(); }
   ['R', 'L'].forEach((side) => {
-    const fr = $('eye' + side); let src = null; try { src = fr.contentDocument && fr.contentDocument.getElementById('c'); } catch(_){}
+    const fr = $('eye' + side); let src = null, fno = 0; try { src = fr.contentDocument && fr.contentDocument.getElementById('c'); fno = fr.contentWindow.__frameNo || 0; } catch(_){}
     if (!src || !src.width) return;
-    const g = liveCv[side].getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, 1024, 1024);
-    drawLensBase(g, side);   // 実際のレンズ形状いっぱいにリフレクターの地を敷く（2D の灯体の外側にまぶたの黒が見えないように）
+    if (fno && fno === liveFrameNo[side]) return;   // 目玉が描き直されていなければテクスチャも更新しない
+    liveFrameNo[side] = fno;
+    const g = liveCv[side].getContext('2d'); g.setTransform(TEX / 1024, 0, 0, TEX / 1024, 0, 0); g.fillStyle = '#000'; g.fillRect(0, 0, 1024, 1024);
+    // レンズの地（静的）はキャッシュしておく
+    const e = lensEdge[side];
+    if (e && baseCache[side] !== e){ const bc = document.createElement('canvas'); bc.width = bc.height = 1024; drawLensBase(bc.getContext('2d'), side); baseCache[side] = e; baseCache[side + 'cv'] = bc; }
+    if (baseCache[side + 'cv']) g.drawImage(baseCache[side + 'cv'], 0, 0);
     g.save();
     const x = LIVE.x * 1024, y = LIVE.y * 1024, w = LIVE.w * 1024, h = LIVE.h * 1024;
     if (side === 'L' && LIVE.mirrorL){ g.translate(x + w, y); g.scale(-1, 1); g.drawImage(src, 0, 0, w, h); } else g.drawImage(src, x, y, w, h);
@@ -235,7 +246,8 @@ document.querySelectorAll('#bar button[data-x]').forEach((b) => b.addEventListen
 
 function resize(){ const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 window.addEventListener('resize', resize); resize();
-(function loop(){ requestAnimationFrame(loop); liveTick(); controls.update(); renderer.render(scene, camera); })();
+let lastRenderAt = 0;
+(function loop(){ requestAnimationFrame(loop); const now = performance.now(); if (EMBED && now - lastRenderAt < 30) return; lastRenderAt = now; liveTick(); controls.update(); renderer.render(scene, camera); })();   // 埋め込みは 30fps
 
 function visibleBox(obj){ const box = new THREE.Box3(); obj.updateWorldMatrix(true, true); obj.traverse((o) => { if (o.isMesh && o.visible){ o.geometry.computeBoundingBox(); const b = o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); box.union(b); } }); return box; }
 function fitTo(obj){
