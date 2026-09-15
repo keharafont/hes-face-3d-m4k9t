@@ -1084,7 +1084,7 @@
     emoFlash   = lp(emoFlash,   0, dt, 0.45);
 
     if (!stale && P){
-      flowS  = lp(flowS, P.gloss ? (P.flow || 0) : 0, dt, 0.30);   // 流れる光沢は設定（gloss）が ON のときだけ
+      flowS  = lp(flowS, P.gloss === false ? 0 : (P.flow || 0), dt, 0.30);   // エディタのプレビューは gloss:false で流れる光沢を止められる（本番は常時）
       openS  = lp(openS,  P.lid.upper.open,  dt, 0.045);
       tiltS  = lp(tiltS,  P.lid.upper.tilt,  dt, 0.060);
       lowerS = lp(lowerS, P.lid.lower.raise, dt, 0.060);
