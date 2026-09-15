@@ -20,6 +20,9 @@
   #prog .t{ font-size:12px; color:var(--dim); margin-bottom:8px; font-family:ui-monospace,Menlo,monospace }
   #prog .b{ height:8px; background:#0b0c0f; border:1px solid #3a4048; border-radius:4px; overflow:hidden } #prog .f{ height:100%; width:0; background:var(--acc) }
   #hint{ position:absolute; left:14px; bottom:12px; font-size:11px; color:var(--dim); z-index:5 }
+  #viewBar{ position:absolute; left:14px; bottom:34px; display:flex; gap:4px; flex-wrap:wrap; justify-content:center; z-index:6; background:rgba(20,23,28,.85); border:1px solid #2b3037; border-radius:8px; padding:6px 8px }
+  #viewBar button{ font:12px -apple-system,sans-serif; padding:5px 10px; border:1px solid #3a4048; border-radius:5px; background:#1c2027; color:#e8eaed; cursor:pointer } #viewBar button:hover{ background:#2a3038 }
+  body.embed #viewBar{ display:none }
 </style>
 </head>
 <body>
@@ -43,6 +46,7 @@
 <div id="view"></div>
 <div id="prog"><div class="t" id="progT">読み込み中…</div><div class="b"><div class="f" id="progF"></div></div></div>
 <div id="hint">ドラッグで回転　ホイールで拡大　右ドラッグで移動</div>
+<div id="viewBar"><button data-c="in">拡大 ＋</button><button data-c="out">縮小 −</button><button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button><button data-c="up">▲ 上から</button><button data-c="down">▼ 下から</button><button data-c="front">正面</button><button data-c="eyes">目に寄る</button><button data-c="fit">全体</button><button data-c="rot">自動回転</button></div>
 <div id="adj" style="position:absolute;right:14px;bottom:12px;z-index:5;background:rgba(20,23,28,.85);border:1px solid #2b3037;border-radius:6px;padding:8px 10px;font-size:11px;color:#9aa3ad;display:none">
   <div style="margin-bottom:4px;color:#e8eaed">目の貼り付け位置（レンズ上の UV）</div>
   <div>x <input type="range" id="ax" min="0" max="0.6" step="0.005" style="width:110px"> y <input type="range" id="ay" min="0" max="0.8" step="0.005" style="width:110px"></div>
@@ -70,7 +74,7 @@ if (PREVIEW){   // 表情エディタから使う: 目玉プレイヤーはプ�
   ['eyeR', 'eyeL'].forEach((id) => { const f = $(id); f.src = f.src.replace('bare=1', 'bare=1&preview=1'); });
   window.addEventListener('message', (ev) => { const d = ev.data || {}; if (d.type === 'frame'){ lastFrame = d.P; ['eyeR', 'eyeL'].forEach((id) => { try { $(id).contentWindow.postMessage(d, '*'); } catch(_){} }); } });
 }
-if (EMBED){ $('bar').style.display = 'none'; $('hint').style.display = 'none'; document.body.style.background = '#000'; }
+if (EMBED){ document.body.classList.add('embed'); $('bar').style.display = 'none'; $('hint').style.display = 'none'; document.body.style.background = '#000'; }
 const view = $('view');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(EMBED ? 1.25 : 2, devicePixelRatio));   // 埋め込み（共有版）は描画負荷を抑える
@@ -308,7 +312,7 @@ function meshCenter(m){ m.updateWorldMatrix(true, false); m.geometry.computeBoun
 function frontDir(){ if (!model) return new THREE.Vector3(0, 0, 1); const ps = ['R', 'L'].filter((k) => eyeMesh[k]).map((k) => meshCenter(eyeMesh[k])); if (!ps.length) return new THREE.Vector3(0, 0, 1); const mid = ps.reduce((a, b) => a.add(b), new THREE.Vector3()).multiplyScalar(1 / ps.length); const c = visibleBox(model).getCenter(new THREE.Vector3()); const d = mid.sub(c); d.y = 0; return d.normalize(); }   // 両目の中点 → 車の前方
 $('front').addEventListener('click', function(){ if (!model) return; controls.autoRotate = false; $('rot').classList.remove('on'); const box = visibleBox(model), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3()); const d = frontDir(); const dist = Math.max(size.x, size.z) * (EMBED ? 0.95 : 1.6); const tgt = c.clone().add(d.clone().multiplyScalar(EMBED ? Math.max(size.x, size.z) * 0.3 : 0)).add(new THREE.Vector3(0, EMBED ? size.y * 0.1 : 0, 0)); camera.position.copy(tgt).add(d.multiplyScalar(dist)).add(new THREE.Vector3(0, size.y * 0.3, 0)); controls.target.copy(tgt); controls.update(); });
 $('eyeZoom').addEventListener('click', function(){ const m = eyeMesh.R; if (!m) return; controls.autoRotate = false; $('rot').classList.remove('on'); const p = meshCenter(m); const d = frontDir(); camera.position.copy(p).add(d.multiplyScalar(0.9)).add(new THREE.Vector3(0, 0.12, 0)); controls.target.copy(p); controls.update(); });
-// 親ページ（共有版エディタ）の視点ボタン: {type:'view', cmd}
+// 視点操作ボタン（ページ内のバー、または親ページから {type:'view', cmd}）
 function viewCmd(cmd){
   if (!model) return;
   const t = controls.target, off = camera.position.clone().sub(t);
@@ -324,6 +328,7 @@ function viewCmd(cmd){
   controls.update();
 }
 window.addEventListener('message', (ev) => { const d = ev.data || {}; if (d.type === 'view' && d.cmd) viewCmd(d.cmd); });
+document.querySelectorAll('#viewBar button').forEach((b) => b.addEventListener('click', () => viewCmd(b.dataset.c)));
 window.__v = { camera, controls, scene, get model(){ return model; }, eyeMesh, render(){ liveTick(); controls.update(); renderer.render(scene, camera); } };
 </script>
 </body>
