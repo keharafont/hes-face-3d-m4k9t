@@ -114,7 +114,8 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
-const MODEL = 'eye_panels.glb' + '?v=4';        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const MODEL = 'eye_panels.glb' + '?v=4';
+const AV = '?v=3';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ UV の基準（テンプレートと同じ） ============ */
 const TEX = 2048;                                  // 合成テクスチャの大きさ
@@ -159,7 +160,7 @@ function loadImage(src){
 }
 async function loadSample(){
   for (const s of SLOTS){
-    try { layerImg[s.id] = await loadImage(ASSET + '/' + s.file); } catch(_){ delete layerImg[s.id]; }
+    try { layerImg[s.id] = await loadImage(ASSET + '/' + s.file + AV); } catch(_){ delete layerImg[s.id]; }
   }
   renderLayerList(); $('msg').textContent = 'サンプルを表示しています';
 }
@@ -253,7 +254,7 @@ function frame(dt){
 /* ============ 合成（UV テクスチャ） ============ */
 const texCv = document.createElement('canvas'); texCv.width = texCv.height = TEX;
 const tg = texCv.getContext('2d');
-let guideImg = null; loadImage(ASSET + '/guide.png').then((im) => { guideImg = im; }).catch(() => {});
+let guideImg = null; loadImage(ASSET + '/guide.png' + AV).then((im) => { guideImg = im; }).catch(() => {});
 
 let LAMP = 'off', lampSeq = false;
 function drawTex(P, now){
@@ -311,17 +312,24 @@ function drawTex(P, now){
 
 /* ============ UV パネル ============ */
 const uv = $('uvCv'), uvCtx = uv.getContext('2d');
-uv.width = TEX; uv.height = TEX;
+// UV の外側にも余白を持たせる。レンズは u=1.004 まで伸びていてテクスチャ（u 0–1）から
+// はみ出すので、はみ出す分と余白をキャンバスに含めておかないと目尻が窓の端で切れて見える
+const PAD = Math.round(TEX * 0.10);
+uv.width = uv.height = TEX + PAD * 2;
 let uvMode = 'fit';
 function layoutUV(){
   const w = $('uvWrap').clientWidth, h = $('uvWrap').clientHeight;
   let s, ox, oy;
   if (uvMode === 'fit'){
-    const bw = (BAND.u1 - BAND.u0) * TEX, bh = (BAND.v1 - BAND.v0) * TEX;
-    s = Math.min(w / bw, h / bh) * 0.84;   // 目尻の先まで見えるように余白を取る
-    ox = (w - bw * s) / 2 - BAND.u0 * TEX * s; oy = (h - bh * s) / 2 - BAND.v0 * TEX * s;
+    // 目頭・目尻の外側にレンズ幅の 6% ずつ余白を足した範囲を収める
+    const mg = (BAND.u1 - BAND.u0) * TEX * 0.06;
+    const bw = (BAND.u1 - BAND.u0) * TEX + mg * 2, bh = (BAND.v1 - BAND.v0) * TEX + mg * 2;
+    s = Math.min(w / bw, h / bh) * 0.96;
+    ox = (w - bw * s) / 2 - (PAD + BAND.u0 * TEX - mg) * s;
+    oy = (h - bh * s) / 2 - (PAD + BAND.v0 * TEX - mg) * s;
   } else {
-    s = Math.min(w, h) / TEX * 0.90; ox = (w - TEX * s) / 2; oy = (h - TEX * s) / 2;
+    const t = TEX + PAD * 2;
+    s = Math.min(w, h) / t * 0.94; ox = (w - t * s) / 2; oy = (h - t * s) / 2;
   }
   uv.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
 }
@@ -332,12 +340,18 @@ window.addEventListener('resize', () => { layoutUV(); resize3d(); if (panel) fac
 const checker = (() => { const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d');
   g.fillStyle = '#2a2f36'; g.fillRect(0, 0, 32, 32); g.fillStyle = '#20242a'; g.fillRect(0, 0, 16, 16); g.fillRect(16, 16, 16, 16); return c; })();
 function drawUV(){
-  uvCtx.clearRect(0, 0, TEX, TEX);
+  uvCtx.setTransform(1, 0, 0, 1, 0, 0);
+  uvCtx.clearRect(0, 0, uv.width, uv.height);
+  uvCtx.translate(PAD, PAD);                       // ここから内側がテクスチャ（u,v = 0–1）
   if ($('uvChecker').checked){ const p = uvCtx.createPattern(checker, 'repeat'); uvCtx.fillStyle = p; uvCtx.fillRect(0, 0, TEX, TEX); }
   uvCtx.drawImage(texCv, 0, 0);
-  if (uvMode === 'all'){   // UV 全体のときは正方形の外枠を描いて範囲が分かるようにする
-    uvCtx.strokeStyle = 'rgba(120,170,255,.55)'; uvCtx.lineWidth = 6; uvCtx.strokeRect(3, 3, TEX - 6, TEX - 6);
-  }
+  // レンズは u=1.004 まで伸びている。u>1 は反対の端（u−1）に回り込むので、その分だけ描き足す
+  const over = (BAND.u1 - 1) * TEX;
+  if (over > 0){ uvCtx.save(); uvCtx.beginPath(); uvCtx.rect(TEX, 0, over, TEX); uvCtx.clip(); uvCtx.drawImage(texCv, TEX, 0); uvCtx.restore(); }
+  // テクスチャの外周（u,v = 0 / 1）。この線の外側は「描いても貼られない」場所
+  uvCtx.strokeStyle = uvMode === 'all' ? 'rgba(120,170,255,.75)' : 'rgba(120,170,255,.45)';
+  uvCtx.lineWidth = 5; uvCtx.setLineDash([26, 18]); uvCtx.strokeRect(0, 0, TEX, TEX); uvCtx.setLineDash([]);
+  uvCtx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 /* ============ 3D（ヘッドライトに貼る LED パネルだけ） ============ */
