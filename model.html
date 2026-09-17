@@ -250,6 +250,37 @@ document.querySelectorAll('#bar button[data-x]').forEach((b) => b.addEventListen
 
 function resize(){ const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 window.addEventListener('resize', resize); resize();
+
+// スライダのドラッグ対策（faces.html と同じ）: Chrome 標準の range ドラッグはポインタキャプチャに依存し、
+// 環境によってはつまみの真上でしか値が変わらない。標準のドラッグは使わず、ページ側でポインタを追従させる
+(function(){
+  let drag = null;
+  const decimals = (step) => { const t = String(step), i = t.indexOf('.'); return i < 0 ? 0 : t.length - i - 1; };
+  function setFromX(r, x){
+    const rc = r.getBoundingClientRect(), T = 16;
+    const f = Math.max(0, Math.min(1, (x - rc.left - T / 2) / Math.max(1, rc.width - T)));
+    const min = +r.min, max = +r.max, step = +r.step || 0.01;
+    const v = Math.max(min, Math.min(max, min + Math.round(f * (max - min) / step) * step));
+    const t = v.toFixed(decimals(step));
+    if (r.value !== t){ r.value = t; r.dispatchEvent(new Event('input', { bubbles: true })); return true; }
+    return false;
+  }
+  function finish(){ if (!drag) return; const d = drag; drag = null; if (d.changed) d.r.dispatchEvent(new Event('change', { bubbles: true })); }
+  document.querySelectorAll('input[type=range]').forEach((r) => {
+    r.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || e.pointerType === 'touch') return;
+      e.preventDefault(); r.focus(); drag = { r, changed: setFromX(r, e.clientX) };
+    });
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    if (!(e.buttons & 1)){ finish(); return; }
+    if (setFromX(drag.r, e.clientX)) drag.changed = true;
+  }, true);
+  ['pointerup', 'pointercancel'].forEach((n) => document.addEventListener(n, finish, true));
+  window.addEventListener('blur', finish);
+})();
+
 let lastRenderAt = 0, slowFrames = 0, prMin = 0.6, statN = 0, statSum = 0, statMax = 0, statAt = 0;
 let viewHold = null, viewHoldUntil = 0, viewTween = null;   // 視点ボタン（loop より前に宣言）
 (function loop(){ requestAnimationFrame(loop); const now = performance.now(); if (EMBED && now - lastRenderAt < 30) return;
