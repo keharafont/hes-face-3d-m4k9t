@@ -74,9 +74,9 @@
       <div class="ptitle">UV 展開（レンズ面）</div>
       <div id="uvWrap"><canvas id="uvCv"></canvas></div>
       <div class="bar">
-        <button id="uvFit" class="on">レンズ</button><button id="uvAll">UV 全体（正方形）</button>
+        <button id="uvFit" class="on" title="レンズ（実際に光る帯）だけを大きく表示します">レンズを拡大</button><button id="uvAll" title="PSD の用紙全体（正方形）を表示します。レンズがどこに載っているかが分かります">用紙全体（PSD と同じ）</button>
         <label><input type="checkbox" id="uvGuide" checked> ガイド（3D にも出す）</label>
-        <label><input type="checkbox" id="uvChecker"> 背景の市松</label>
+        <label title="何も描かれていない透明な場所を市松模様で示します（画像編集ソフトと同じ表示）"><input type="checkbox" id="uvChecker"> 透明を市松で表示</label>
       </div>
     </div>
   </div>
@@ -451,6 +451,8 @@ $('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classLi
 $('sideL').addEventListener('click', () => useSide('L'));
 $('sideR').addEventListener('click', () => useSide('R'));
 function setSide(open){
+  const hd = document.querySelector('header');
+  $('side').style.top = hd.offsetHeight + 'px';     // ヘッダー（動作デモ・設定）を隠さない
   $('side').style.display = open ? 'block' : 'none';
   $('side-t').classList.toggle('on', open);
   $('main').classList.toggle('side', open);
