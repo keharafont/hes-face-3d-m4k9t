@@ -26,6 +26,8 @@
   .bar{ display:flex; gap:6px; padding:7px 10px; border-top:1px solid var(--line); background:#12151a; flex-wrap:wrap; align-items:center }
   .bar label{ font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px }
   #side{ position:absolute; right:0; top:0; bottom:0; width:260px; background:rgba(18,21,26,.96); border-left:1px solid var(--line); padding:12px; overflow:auto; z-index:4 }
+  #side-head{ display:flex; align-items:center; justify-content:space-between; margin:0 0 10px }
+  #side-head b{ font-size:11px; letter-spacing:.14em; color:var(--dim) }
   #side h3{ font-size:11px; letter-spacing:.14em; color:var(--dim); margin:14px 0 6px; font-weight:600 }
   #side h3:first-child{ margin-top:0 }
   .row{ display:grid; grid-template-columns:76px 1fr 40px; gap:6px; align-items:center; margin:5px 0 }
@@ -81,6 +83,7 @@
 </div>
 
 <aside id="side" style="display:none">
+  <div id="side-head"><b>設定</b><button id="side-x">閉じる ✕</button></div>
   <h3>表情（EE の出力）— グリーティング</h3>
   <div class="row"><span>覚醒度</span><input type="range" id="ar" min="0" max="1" step="0.01" value="0.5"><span class="v" id="v_ar"></span></div>
   <div class="row"><span>視線 横</span><input type="range" id="gx" min="-1" max="1" step="0.01" value="0"><span class="v" id="v_gx"></span></div>
@@ -311,7 +314,7 @@ function drawTex(P, now){
 const uv = $('uvCv'), uvCtx = uv.getContext('2d');
 // UV の外側にも余白を持たせる。レンズは u=1.004 まで伸びていてテクスチャ（u 0–1）から
 // はみ出すので、はみ出す分と余白をキャンバスに含めておかないと目尻が窓の端で切れて見える
-const PAD = Math.round(TEX * 0.10);
+const PAD = Math.round(TEX * 0.18);
 uv.width = uv.height = TEX + PAD * 2;
 let uvMode = 'fit';
 function layoutUV(){
@@ -339,15 +342,19 @@ const checker = (() => { const c = document.createElement('canvas'); c.width = c
 function drawUV(){
   uvCtx.setTransform(1, 0, 0, 1, 0, 0);
   uvCtx.clearRect(0, 0, uv.width, uv.height);
+  uvCtx.fillStyle = '#000';                        // 余白もシートと同じ地色にして、目尻側が切れて見えないように
+  uvCtx.fillRect(0, 0, uv.width, uv.height);
   uvCtx.translate(PAD, PAD);                       // ここから内側がテクスチャ（u,v = 0–1）
   if ($('uvChecker').checked){ const p = uvCtx.createPattern(checker, 'repeat'); uvCtx.fillStyle = p; uvCtx.fillRect(0, 0, TEX, TEX); }
   uvCtx.drawImage(texCv, 0, 0);
   // レンズは u=1.004 まで伸びている。u>1 は反対の端（u−1）に回り込むので、その分だけ描き足す
   const over = (BAND.u1 - 1) * TEX;
   if (over > 0){ uvCtx.save(); uvCtx.beginPath(); uvCtx.rect(TEX, 0, over, TEX); uvCtx.clip(); uvCtx.drawImage(texCv, TEX, 0); uvCtx.restore(); }
-  // テクスチャの外周（u,v = 0 / 1）。この線の外側は「描いても貼られない」場所
-  uvCtx.strokeStyle = uvMode === 'all' ? 'rgba(120,170,255,.75)' : 'rgba(120,170,255,.45)';
-  uvCtx.lineWidth = 5; uvCtx.setLineDash([26, 18]); uvCtx.strokeRect(0, 0, TEX, TEX); uvCtx.setLineDash([]);
+  // テクスチャの外周（u,v = 0 / 1）。「UV 全体」のときだけ出す
+  if (uvMode === 'all'){
+    uvCtx.strokeStyle = 'rgba(120,170,255,.7)';
+    uvCtx.lineWidth = 5; uvCtx.setLineDash([26, 18]); uvCtx.strokeRect(0, 0, TEX, TEX); uvCtx.setLineDash([]);
+  }
   uvCtx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
@@ -443,7 +450,15 @@ function syncEmo(){}   // 表情はグリーティング固定（選択 UI な�
 $('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classList.toggle('on', EE.demo); });
 $('sideL').addEventListener('click', () => useSide('L'));
 $('sideR').addEventListener('click', () => useSide('R'));
-$('side-t').addEventListener('click', function(){ const s = $('side'); const open = s.style.display === 'none'; s.style.display = open ? 'block' : 'none'; this.classList.toggle('on', open); $('main').classList.toggle('side', open); setTimeout(() => { layoutUV(); resize3d(); }, 180); });
+function setSide(open){
+  $('side').style.display = open ? 'block' : 'none';
+  $('side-t').classList.toggle('on', open);
+  $('main').classList.toggle('side', open);
+  setTimeout(() => { layoutUV(); resize3d(); }, 180);
+}
+$('side-t').addEventListener('click', () => setSide($('side').style.display === 'none'));
+$('side-x').addEventListener('click', () => setSide(false));
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSide(false); });
 [['ar', 'ar'], ['gx', 'gx'], ['gy', 'gy'], ['conv', 'conv'], ['ex', 'ex'], ['ey', 'ey']].forEach(([id, k]) => {
   $(id).addEventListener('input', function(){ EE[k] = +this.value; if (k === 'gx' || k === 'gy' || k === 'ar') EE.demo = false, $('demo').classList.remove('on'); $('v_' + id).textContent = (+this.value).toFixed(2); });
 });
