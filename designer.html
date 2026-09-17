@@ -26,6 +26,14 @@
   .bar{ display:flex; gap:6px; padding:7px 10px; border-top:1px solid var(--line); background:#12151a; flex-wrap:wrap; align-items:center }
   .bar label{ font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px }
   #side{ position:absolute; right:0; top:0; bottom:0; width:260px; background:rgba(18,21,26,.96); border-left:1px solid var(--line); padding:12px; overflow:auto; z-index:4 }
+  #dlg{ position:fixed; inset:0; background:rgba(8,10,13,.72); z-index:9; display:none; align-items:center; justify-content:center }
+  #dlg .box{ width:360px; background:#1b1f26; border:1px solid var(--line); border-radius:10px; padding:16px; box-shadow:0 18px 60px #000a }
+  #dlg .box > b{ display:block; font-size:13px; margin-bottom:12px }
+  #dlg select{ width:100%; margin-bottom:10px }
+  #dlgPick{ display:inline-block; font:12px -apple-system,"Hiragino Sans",sans-serif; padding:5px 11px; border:1px solid #3a4048; border-radius:5px; background:#232830; cursor:pointer }
+  #dlgName{ font-size:11px; color:var(--dim); margin:8px 0 0 }
+  #dlgMsg{ font-size:11px; color:#e08080; min-height:15px; margin:4px 0 8px }
+  #dlg .row{ display:flex; gap:8px; justify-content:flex-end }
   #side-head{ display:flex; align-items:center; justify-content:space-between; margin:0 0 10px }
   #side-head b{ font-size:11px; letter-spacing:.14em; color:var(--dim) }
   #side h3{ font-size:11px; letter-spacing:.14em; color:var(--dim); margin:14px 0 6px; font-weight:600 }
@@ -49,9 +57,9 @@
 <div id="app">
   <header>
     <b>データ確認用ページ</b><small>片目・LED パネル 3D ＋ UV 展開</small>
-    <button id="pick">データを読み込む</button>
+    <button id="pick">パーツを読み込む</button>
+    <button id="export">書き出し</button>
     <button id="useSample" class="on">サンプルに戻す</button>
-    <input type="file" id="file" accept=".psd,.png,image/png" multiple style="display:none">
     <span style="flex:1"></span>
     <button id="demo">動作デモ</button>
     <button id="side-t">設定</button>
@@ -82,6 +90,17 @@
   </div>
 </div>
 
+<div id="dlg">
+  <div class="box">
+    <b>何を読み込みますか？</b>
+    <select id="dlgPart"></select>
+    <label id="dlgPick">PNG を選ぶ<input type="file" id="dlgFile" accept=".png,image/png" style="display:none"></label>
+    <div id="dlgName">（まだ選ばれていません）</div>
+    <div id="dlgMsg"></div>
+    <div class="row"><button id="dlgCancel">やめる</button><button id="dlgOk" class="on">読み込む</button></div>
+  </div>
+</div>
+
 <aside id="side" style="display:none">
   <div id="side-head"><b>設定</b><button id="side-x">閉じる ✕</button></div>
   <h3>表情（EE の出力）— グリーティング</h3>
@@ -91,18 +110,18 @@
   <div class="row"><span>寄り目</span><input type="range" id="conv" min="-0.2" max="0.8" step="0.005" value="0.4"><span class="v" id="v_conv"></span></div>
   <div class="row"><span>横比率</span><input type="range" id="ex" min="0.5" max="2" step="0.01" value="1"><span class="v" id="v_ex"></span></div>
   <div class="row"><span>縦比率</span><input type="range" id="ey" min="0.5" max="2" step="0.01" value="1"><span class="v" id="v_ey"></span></div>
+  <div class="row"><span>目玉の大きさ</span><input type="range" id="esize" min="0.5" max="1.4" step="0.01" value="0.94"><span class="v" id="v_esize"></span></div>
   <h3>ウィンカー</h3>
   <div style="display:flex;gap:6px"><button id="w_off" class="on">消灯</button><button id="w_on">点滅</button><button id="w_seq">シーケンシャル</button></div>
   <h3>レイヤー</h3>
   <div id="layers"></div>
   <h3>読み込み</h3>
-  <div style="font-size:11px;color:var(--dim)">PSD をこの画面にドラッグするか「データを読み込む」から選んでください。レイヤーごとの PNG（複数選択）でも読めます。<br>L1〜L7 の名前で振り分けます。</div>
+  <div style="font-size:11px;color:var(--dim)">「パーツを読み込む」で、パーツを選んでから PNG を 1 枚ずつ読み込みます。画面にドラッグしても同じ画面が出ます。ファイル名は自由で構いません。<br>確認できたら「書き出し」で、正しい名前に揃えた zip が 1 つ落ちます。</div>
   <div id="msg"></div>
 </aside>
 
-<div id="drop">ここに PSD／PNG をドロップ</div>
+<div id="drop">ここに PNG をドロップ</div>
 
-<script src="ag-psd.js"></script>
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
 </script>
@@ -118,40 +137,61 @@ const ASSET = '.';                 // アセットの置き場所（ビルド時
 const MODEL = 'eye_panels.glb' + '?v=4';
 const AV = '?v=3';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
-/* ============ UV の基準（テンプレートと同じ） ============ */
-const TEX = 2048;                                  // 合成テクスチャの大きさ
-const IRIS = { x: 0.3999, y: 0.48755, r: 0.07324 };// 虹彩の基準（UV）
-const GAZE = { x: 0.14478, y: 0.06445 };           // 視線 ±1 の移動量（UV）
-const BAND = { u0: 0.0828, u1: 1.004, v0: 0.4184, v1: 0.6045 };   // レンズ面の範囲（UV）
-const BANDH = BAND.v1 - BAND.v0;
+/* ============ レンズの形（本番レンダラーと同じ輪郭データ） ============ */
+const TEX  = 2048;                                 // 合成テクスチャの大きさ
+const EDGE = {"u0":0.082835,"u1":1.00402,"v0":0.4184,"v1":0.604523,"n":192,"top":[0.437012,0.436279,0.435547,0.434814,0.434082,0.43335,0.432617,0.431885,0.431152,0.43042,0.429688,0.428955,0.428223,0.427246,0.426514,0.425781,0.425049,0.424316,0.424072,0.423584,0.42334,0.423096,0.422852,0.422607,0.422363,0.422119,0.421875,0.421631,0.421387,0.420898,0.420654,0.42041,0.420166,0.419922,0.419678,0.419434,0.419189,0.418701,0.418457,0.418457,0.418457,0.418701,0.418701,0.418701,0.418945,0.418945,0.419189,0.419189,0.419434,0.419434,0.419678,0.419678,0.419922,0.419922,0.420166,0.420166,0.420166,0.42041,0.42041,0.420654,0.420654,0.420898,0.420898,0.421143,0.421143,0.421143,0.421143,0.421143,0.421143,0.421387,0.421387,0.421387,0.421387,0.421387,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421875,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421631,0.421875,0.421875,0.422119,0.422119,0.422363,0.422363,0.422607,0.422607,0.422852,0.422852,0.423096,0.423096,0.42334,0.42334,0.423584,0.423828,0.424072,0.424316,0.424561,0.424805,0.425293,0.425537,0.425781,0.426025,0.42627,0.426514,0.427002,0.427246,0.42749,0.427734,0.427979,0.428223,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428467,0.428711,0.428955,0.429199,0.429443,0.429688,0.429932,0.430176,0.43042,0.430664,0.430908,0.431152,0.431396,0.431641,0.431885,0.432129,0.432373,0.432617,0.432861,0.433105,0.43335,0.433594,0.433838,0.434082,0.434326,0.43457,0.434814,0.435059,0.435303,0.435547,0.435547],"bot":[0.437256,0.448242,0.456543,0.464111,0.470459,0.476074,0.481689,0.487549,0.49292,0.498535,0.504639,0.511719,0.518555,0.525635,0.532715,0.539795,0.546387,0.550293,0.551758,0.553223,0.554688,0.55542,0.556396,0.557373,0.55835,0.559326,0.560303,0.561035,0.562012,0.562988,0.563965,0.564941,0.565674,0.56665,0.567627,0.568604,0.56958,0.570312,0.571045,0.572021,0.572754,0.573486,0.574463,0.575195,0.575928,0.57666,0.577637,0.578369,0.579346,0.580078,0.580811,0.581543,0.58252,0.583252,0.583984,0.584961,0.585693,0.586426,0.587402,0.587891,0.588379,0.588867,0.589355,0.589844,0.590576,0.591064,0.591553,0.592041,0.592529,0.593018,0.593506,0.593994,0.594482,0.594971,0.595703,0.596191,0.59668,0.597168,0.597656,0.598145,0.598633,0.598877,0.599121,0.599365,0.599365,0.599609,0.599854,0.600098,0.600342,0.600586,0.60083,0.601074,0.601318,0.601562,0.601807,0.602051,0.602295,0.602295,0.602539,0.602783,0.603027,0.603271,0.603516,0.60376,0.604004,0.604248,0.604248,0.603516,0.602783,0.602295,0.601562,0.60083,0.600098,0.599609,0.598877,0.598145,0.597412,0.596924,0.596191,0.595459,0.594727,0.594238,0.593506,0.592773,0.590088,0.587402,0.584961,0.582275,0.579834,0.577148,0.574707,0.572021,0.569336,0.56665,0.564209,0.561768,0.559082,0.556396,0.553955,0.55127,0.548584,0.546143,0.543457,0.540771,0.537598,0.534668,0.531738,0.528809,0.525635,0.522705,0.519775,0.516846,0.513916,0.510742,0.507812,0.504883,0.501953,0.499023,0.496338,0.495117,0.494141,0.49292,0.491943,0.490723,0.489746,0.488525,0.487549,0.486328,0.485352,0.484131,0.483154,0.481934,0.480957,0.479736,0.47876,0.477783,0.476562,0.475342,0.474365,0.473389,0.472168,0.470947,0.469971,0.468994,0.467773,0.466553,0.465576,0.4646,0.463379,0.462402,0.448975,0.44751]};                       // レンズの上縁・下縁（UV）
+const BAND = { u0: EDGE.u0, u1: EDGE.u1, v0: EDGE.v0, v1: EDGE.v1 };
+const BANDH  = BAND.v1 - BAND.v0;
+const IRIS_U = 0.3999;                             // 目玉の基準位置（u）
+const GAZE   = { x: 0.14478, y: 0.06445 };         // 視線 ±1 の移動量（UV）
+let   EYESIZE = 0.94;                              // 目玉の直径 ÷ その場所のレンズの高さ
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+
+function edgeAt(u){                                 // u → その位置のレンズの上縁・下縁（v）
+  const f = clamp((u - EDGE.u0) / (EDGE.u1 - EDGE.u0), 0, 1) * (EDGE.n - 1);
+  const i = Math.min(EDGE.n - 2, Math.floor(f)), k = f - i;
+  return { t: EDGE.top[i] + (EDGE.top[i + 1] - EDGE.top[i]) * k,
+           b: EDGE.bot[i] + (EDGE.bot[i + 1] - EDGE.bot[i]) * k };
+}
+const uAt = (i) => EDGE.u0 + (EDGE.u1 - EDGE.u0) * i / (EDGE.n - 1);
+function lensPath(g){                               // レンズの形（テクスチャ座標）
+  g.beginPath();
+  for (let i = 0; i < EDGE.n; i++){ const x = uAt(i) * TEX, y = EDGE.top[i] * TEX; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+  for (let i = EDGE.n - 1; i >= 0; i--) g.lineTo(uAt(i) * TEX, EDGE.bot[i] * TEX);
+  g.closePath();
+}
 
 /* ============ 感情（EE と同じ定義） ============ */
 const EMOTIONS = {"覚醒": {"tilt": 0.0, "lower": 0.0, "pupil": 0.24, "iris": 0.2, "note": "振り出しの一瞬・全開の見開き"}, "昂揚": {"tilt": 0.24, "lower": 0.1, "pupil": 0.12, "iris": 0.1, "note": "ドリフト維持・瞬き抑制・凝視"}, "我慢": {"tilt": 0.46, "lower": 0.44, "pupil": -0.24, "iris": -0.22, "note": "制動・目頭を落として下から詰める"}, "集中": {"tilt": 0.18, "lower": 0.2, "pupil": -0.12, "iris": -0.05, "note": "コーナリングG・目頭下がり"}, "疾走": {"tilt": 0.08, "lower": 0.06, "pupil": 0.02, "iris": -0.05, "note": "全開加速・前傾の目"}, "余裕": {"tilt": -0.22, "lower": 0.02, "pupil": -0.06, "iris": -0.18, "note": "巡航・ハの字で力が抜けた目"}, "待機": {"tilt": -0.34, "lower": 0.24, "pupil": -0.16, "iris": -0.26, "open": -0.16, "note": "停車中・半眼でまどろむ"}, "気合い": {"tilt": 0.34, "lower": 0.14, "pupil": 0.2, "iris": 0.14, "open": 0.1, "note": "発進の気合い・カッと見開く"}, "動揺": {"tilt": -0.3, "lower": 0.3, "pupil": 0.12, "iris": 0.06, "note": "切り返し連打・目が泳ぐ"}, "爽快": {"tilt": -0.14, "lower": 0.06, "pupil": 0.08, "iris": -0.05, "open": 0.06, "note": "高速巡航・晴れやかな目"}, "緊張": {"tilt": 0.3, "lower": 0.3, "pupil": -0.08, "iris": -0.1, "open": 0.05, "note": "難所の接近・息を呑んで身構える"}, "しまった": {"tilt": -0.42, "lower": 0.18, "pupil": 0.1, "iris": 0.02, "open": -0.04, "note": "ヒヤリ・やらかし。ハの字で視線が落ちる"}, "めまい": {"tilt": -0.12, "lower": 0.12, "pupil": 0.06, "iris": 0.0, "open": -0.2, "note": "回転明け・目が回ってぐるぐる（レア）"}, "ようこそ": {"tilt": -0.1, "lower": 0.08, "pupil": 0.16, "iris": 0.1, "open": 0.08, "note": "停車中に人が来た・グリーティング（目で追う）"}};
 const NAMES = Object.keys(EMOTIONS);
 
-/* ============ レイヤー ============ */
-const SLOTS = [
-  { id: 'L1', name: 'リフレクター', file: 'sample_L1.jpg' },
-  { id: 'L2', name: '赤目（虹彩）', file: 'sample_L2.png' },
-  { id: 'L3', name: '黒目（瞳孔）', file: 'sample_L3.png' },
-  { id: 'L4', name: 'ハイライト', file: 'sample_L4.png' },
-  { id: 'L5', name: 'ウィンカー点灯', file: 'sample_L5.png' },
-  { id: 'L6', name: '上まぶた', file: 'sample_L6.png' },
-  { id: 'L7', name: '下まぶた', file: 'sample_L7.png' },
+/* ============ パーツ ============ */
+// kind 'band' = レンズの外接矩形いっぱいに描いた絵 / 'eye' = 正方形（枠＝赤目玉の外径）
+const PARTS = [
+  { id: 'reflector', name: 'リフレクター',         kind: 'band', file: 'p_reflector.png' },
+  { id: 'iris',      name: '赤目玉（虹彩）',        kind: 'eye',  file: 'p_iris.png' },
+  { id: 'pupil',     name: '黒目（瞳孔）',          kind: 'eye',  file: 'p_pupil.png' },
+  { id: 'highlight', name: 'ハイライト',            kind: 'eye',  file: 'p_highlight.png' },
+  { id: 'winker',    name: 'ウィンカー点灯',        kind: 'band', file: 'p_winker.png' },
+  { id: 'lid_upper', name: '上まぶた（閉じきり）',   kind: 'band', file: 'p_lid_upper.png' },
+  { id: 'lid_lower', name: '下まぶた（閉じきり）',   kind: 'band', file: 'p_lid_lower.png' },
 ];
-const layerImg = {};      // id -> HTMLImageElement / Canvas（UV 全体を覆う大きさ）
-const layerOn = {};       // id -> 表示するか
-SLOTS.forEach((s) => { layerOn[s.id] = true; });
+const PIDX = {}; PARTS.forEach((p, i) => { PIDX[p.id] = i; });
+const partImg = {};        // id -> Image
+const partOn  = {};        // id -> 表示するか
+const partSrc = {};        // id -> 読み込んだ元ファイル（書き出しでそのまま使う）
+PARTS.forEach((p) => { partOn[p.id] = true; });
 
 function renderLayerList(){
   $('layers').innerHTML = '';
-  SLOTS.forEach((s) => {
+  PARTS.forEach((p) => {
     const d = document.createElement('div');
-    const c = document.createElement('input'); c.type = 'checkbox'; c.checked = layerOn[s.id];
-    c.addEventListener('change', () => { layerOn[s.id] = c.checked; });
+    const c = document.createElement('input'); c.type = 'checkbox'; c.checked = partOn[p.id];
+    c.addEventListener('change', () => { partOn[p.id] = c.checked; });
     const t = document.createElement('span');
-    t.textContent = s.id + ' ' + s.name + (layerImg[s.id] ? '' : '（なし）');
-    t.style.color = layerImg[s.id] ? '#cfd6de' : '#6b7480';
+    const own = partSrc[p.id];
+    t.textContent = p.name + (own ? '  ← ' + own.name : (partImg[p.id] ? '（サンプル）' : '（なし）'));
+    t.style.color = own ? '#9fd0ff' : (partImg[p.id] ? '#cfd6de' : '#6b7480');
     d.appendChild(c); d.appendChild(t); $('layers').appendChild(d);
   });
 }
@@ -160,69 +200,90 @@ function loadImage(src){
   return new Promise((ok, ng) => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => ok(im); im.onerror = ng; im.src = src; });
 }
 async function loadSample(){
-  for (const s of SLOTS){
-    try { layerImg[s.id] = await loadImage(ASSET + '/' + s.file + AV); } catch(_){ delete layerImg[s.id]; }
+  for (const p of PARTS){
+    try { partImg[p.id] = await loadImage(ASSET + '/' + p.file + AV); } catch(_){ delete partImg[p.id]; }
+    delete partSrc[p.id];
   }
-  renderLayerList(); $('msg').textContent = 'サンプルを表示しています';
+  renderLayerList(); $('msg').style.color = ''; $('msg').textContent = 'サンプルを表示しています';
 }
 
-/* ---- 読み込み: PSD / PNG ---- */
-function slotOf(name){
-  const m = String(name || '').match(/\bL([1-7])\b/i) || String(name || '').match(/^L?([1-7])[_\-\s]/i);
-  return m ? 'L' + m[1] : null;
+/* ---- 読み込み: パーツを選んでから PNG を 1 枚 ---- */
+let pendingFile = null;
+function openDlg(file){
+  pendingFile = file || null;
+  $('dlgName').textContent = pendingFile ? pendingFile.name : '（まだ選ばれていません）';
+  $('dlg').style.display = 'flex';
 }
-async function loadPSD(file){
-  const buf = await file.arrayBuffer();
-  const psd = window.agPsd.readPsd(buf, { skipCompositeImageData: true, skipThumbnail: true, useImageData: false });
-  const W = psd.width, H = psd.height;
-  let found = 0, skipped = [];
-  const flat = [];
-  (function walk(ls){ (ls || []).forEach((l) => { if (l.children) walk(l.children); else flat.push(l); }); })(psd.children);
-  SLOTS.forEach((s) => { delete layerImg[s.id]; });
-  for (const l of flat){
-    const slot = slotOf(l.name);
-    if (!slot || !l.canvas){ if (l.name) skipped.push(l.name); continue; }
-    const cv = document.createElement('canvas'); cv.width = TEX; cv.height = TEX;
-    const g = cv.getContext('2d');
-    g.drawImage(l.canvas, (l.left || 0) / W * TEX, (l.top || 0) / H * TEX,
-                (l.right - l.left) / W * TEX, (l.bottom - l.top) / H * TEX);
-    layerImg[slot] = cv; found++;
-  }
-  renderLayerList();
-  $('msg').textContent = `${file.name}: ${found} レイヤーを読み込みました` + (skipped.length ? `／振り分けできず: ${skipped.slice(0, 6).join(', ')}` : '');
-  $('useSample').classList.remove('on');
-}
-async function loadPNGs(files){
-  let found = 0, skipped = [];
-  for (const f of files){
-    const slot = slotOf(f.name);
-    if (!slot){ skipped.push(f.name); continue; }
-    const url = URL.createObjectURL(f);
-    try {
-      const im = await loadImage(url);
-      const cv = document.createElement('canvas'); cv.width = TEX; cv.height = TEX;
-      cv.getContext('2d').drawImage(im, 0, 0, TEX, TEX);
-      layerImg[slot] = cv; found++;
-    } catch(_){ skipped.push(f.name); }
-    URL.revokeObjectURL(url);
-  }
-  renderLayerList();
-  $('msg').textContent = `${found} 枚を読み込みました` + (skipped.length ? `／名前に L1〜L7 が無い: ${skipped.slice(0, 6).join(', ')}` : '');
-  $('useSample').classList.remove('on');
-}
-async function handleFiles(files){
-  const arr = [...files];
-  const psd = arr.find((f) => /\.psd$/i.test(f.name));
+function closeDlg(){ $('dlg').style.display = 'none'; pendingFile = null; $('dlgFile').value = ''; }
+async function applyDlg(){
+  const id = $('dlgPart').value;
+  if (!pendingFile){ $('dlgMsg').textContent = 'ファイルを選んでください'; return; }
   try {
-    if (psd) await loadPSD(psd); else await loadPNGs(arr.filter((f) => /\.png$/i.test(f.name)));
-  } catch (e){ $('msg').style.color = '#e08080'; $('msg').textContent = '読み込めませんでした: ' + e.message; }
+    const url = URL.createObjectURL(pendingFile);
+    const im = await loadImage(url);
+    partImg[id] = im; partSrc[id] = pendingFile; partOn[id] = true;
+    URL.revokeObjectURL(url);
+    const p = PARTS[PIDX[id]];
+    $('msg').style.color = ''; $('msg').textContent = p.name + ' に ' + pendingFile.name + ' を読み込みました';
+    $('useSample').classList.remove('on');
+    renderLayerList(); closeDlg();
+  } catch (e){ $('dlgMsg').textContent = '読み込めませんでした（PNG を選んでください）'; }
 }
-$('pick').addEventListener('click', () => $('file').click());
-$('file').addEventListener('change', (e) => { handleFiles(e.target.files); e.target.value = ''; });
+$('pick').addEventListener('click', () => openDlg(null));
+$('dlgFile').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) openDlg(f); });
+$('dlgOk').addEventListener('click', applyDlg);
+$('dlgCancel').addEventListener('click', closeDlg);
 $('useSample').addEventListener('click', async () => { await loadSample(); $('useSample').classList.add('on'); });
 ['dragenter', 'dragover'].forEach((n) => document.addEventListener(n, (e) => { e.preventDefault(); $('drop').style.display = 'flex'; }));
 ['dragleave', 'drop'].forEach((n) => document.addEventListener(n, (e) => { e.preventDefault(); if (n === 'dragleave' && e.relatedTarget) return; $('drop').style.display = 'none'; }));
-document.addEventListener('drop', (e) => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+document.addEventListener('drop', (e) => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) openDlg(f); });
+
+/* ---- 書き出し: 読み込んだ原本をそのままの画質で zip 1 つに ---- */
+const CRC = (() => { const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++){ let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return (u8) => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = t[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+})();
+function zipStore(files){                 // [{name, data:Uint8Array}] → Blob（無圧縮 zip）
+  const enc = new TextEncoder(), parts = [], dir = []; let off = 0;
+  const u32 = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+  const u16 = (v) => [v & 255, (v >>> 8) & 255];
+  for (const f of files){
+    const nm = enc.encode(f.name), crc = CRC(f.data), n = f.data.length;
+    const lh = new Uint8Array([...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0),
+                               ...u32(crc), ...u32(n), ...u32(n), ...u16(nm.length), ...u16(0)]);
+    parts.push(lh, nm, f.data);
+    dir.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0),
+                             ...u32(crc), ...u32(n), ...u32(n), ...u16(nm.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+                             ...u32(0), ...u32(off)]), nm);
+    off += lh.length + nm.length + n;
+  }
+  const ds = dir.reduce((a, x) => a + x.length, 0);
+  const end = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(ds), ...u32(off), ...u16(0)]);
+  return new Blob([...parts, ...dir, end], { type: 'application/zip' });
+}
+async function doExport(){
+  const miss = PARTS.filter((p) => !partSrc[p.id]);
+  if (miss.length === PARTS.length){ $('msg').style.color = '#e08080'; $('msg').textContent = '書き出すデータがありません（読み込んでから押してください）'; return; }
+  const d = new Date(), pad = (v) => String(v).padStart(2, '0');
+  const dir = 'HES_eye_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
+  const files = [], list = [];
+  for (let i = 0; i < PARTS.length; i++){
+    const p = PARTS[i], f = partSrc[p.id];
+    if (!f) continue;
+    files.push({ name: dir + '/' + pad(i + 1) + '_' + p.id + '.png', data: new Uint8Array(await f.arrayBuffer()) });
+    list.push({ file: pad(i + 1) + '_' + p.id + '.png', part: p.id, name: p.name, kind: p.kind, original: f.name });
+  }
+  const meta = { generated: d.toISOString(), band: { w: 7546, h: 1525 }, eye: { w: 1200, h: 1200 }, parts: list,
+                 missing: miss.map((p) => p.name) };
+  files.push({ name: dir + '/manifest.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 2)) });
+  const url = URL.createObjectURL(zipStore(files));
+  const a = document.createElement('a'); a.href = url; a.download = dir + '.zip'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  $('msg').style.color = '';
+  $('msg').textContent = dir + '.zip を書き出しました' + (miss.length ? '（未読み込み: ' + miss.map((p) => p.name).join('・') + '）' : '');
+}
+$('export').addEventListener('click', doExport);
+
 
 /* ============ EE ライト（表情エディタと同じ式） ============ */
 const EE = { emo: 'ようこそ', ar: 0.5, gx: 0, gy: 0, conv: 0.4, ex: 1, ey: 1, demo: false, t: 0, blink: -1, nextBlink: 2 };
@@ -257,58 +318,98 @@ const tg = texCv.getContext('2d');
 let guideImg = null; loadImage(ASSET + '/guide.png' + AV).then((im) => { guideImg = im; }).catch(() => {});
 
 let LAMP = 'off', lampSeq = false;
+const BX = () => BAND.u0 * TEX, BY = () => BAND.v0 * TEX;
+const BW = () => (BAND.u1 - BAND.u0) * TEX, BH = () => BANDH * TEX;
+const uNorm = (u) => (u - (BAND.u0 + BAND.u1) / 2) / ((BAND.u1 - BAND.u0) / 2);
+
+function drawBand(id){                      // 帯タイプ: レンズの外接矩形にそのまま貼る
+  const im = partImg[id]; if (!im || !partOn[id]) return;
+  tg.drawImage(im, BX(), BY(), BW(), BH());
+}
+function clipEdge(fn, above){               // 縁の曲線で切り取る（上側／下側）
+  tg.save(); tg.beginPath();
+  const N = 96;
+  for (let i = 0; i <= N; i++){
+    const u = BAND.u0 + (BAND.u1 - BAND.u0) * i / N, x = u * TEX, y = fn(u) * TEX;
+    i ? tg.lineTo(x, y) : tg.moveTo(x, y);
+  }
+  if (above){ tg.lineTo(TEX * 2, -TEX); tg.lineTo(-TEX, -TEX); }
+  else { tg.lineTo(TEX * 2, TEX * 2); tg.lineTo(-TEX, TEX * 2); }
+  tg.closePath(); tg.clip();
+}
+function strokeEdge(fn){
+  tg.beginPath();
+  const N = 96;
+  for (let i = 0; i <= N; i++){ const u = BAND.u0 + (BAND.u1 - BAND.u0) * i / N; i ? tg.lineTo(u * TEX, fn(u) * TEX) : tg.moveTo(u * TEX, fn(u) * TEX); }
+  tg.strokeStyle = 'rgba(158,176,196,.18)'; tg.lineWidth = Math.max(2, BH() * 0.013); tg.stroke();
+}
+
 function drawTex(P, now){
   tg.clearRect(0, 0, TEX, TEX);
-  tg.fillStyle = '#000'; tg.fillRect(0, 0, TEX, TEX);
-  const put = (id) => { const im = layerImg[id]; if (im && layerOn[id]) tg.drawImage(im, 0, 0, TEX, TEX); };
 
-  put('L1');                                                     // リフレクター（動かない）
+  tg.save(); lensPath(tg); tg.clip();       // レンズの外には何も出さない
+  drawBand('reflector');
 
-  // 目玉: 視線で平行移動、感情で拡縮。寄り目は目頭側へ寄せる（右目は −u 方向）
-  const cx = (IRIS.x - P.gaze.conv * GAZE.x * 0.5 + P.gaze.x * GAZE.x) * TEX;
-  const cy = (IRIS.y + P.gaze.y * GAZE.y) * TEX;
-  const bx = IRIS.x * TEX, by = IRIS.y * TEX;
-  function stamp(id, sc, px, py){
-    const im = layerImg[id]; if (!im || !layerOn[id]) return;
-    tg.save(); tg.translate(px, py); tg.scale(sc.x, sc.y); tg.translate(-bx, -by);
-    tg.drawImage(im, 0, 0, TEX, TEX); tg.restore();
+  // ---- 目玉: 視線で動かし、その場所のレンズの高さに収める ----
+  const uc = IRIS_U + P.gaze.x * GAZE.x - P.gaze.conv * GAZE.x * 0.5;
+  const eg = edgeAt(uc);
+  const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE.y;
+  const D  = (eg.b - eg.t) * TEX * EYESIZE;
+  function drawEye(id, sc, px, py){
+    const im = partImg[id]; if (!im || !partOn[id]) return;
+    const w = D * sc * P.eyeScale.x, h = D * sc * P.eyeScale.y;
+    tg.drawImage(im, px * TEX - w / 2, py * TEX - h / 2, w, h);
   }
-  const irisSc = (0.80 + 0.30 * P.iris.dia);
-  const pupSc  = (0.55 + 0.85 * P.pupil.dia);
-  stamp('L2', { x: irisSc * P.eyeScale.x, y: irisSc * P.eyeScale.y }, cx, cy);
-  stamp('L3', { x: pupSc * P.eyeScale.x, y: pupSc * P.eyeScale.y }, cx, cy);
+  drawEye('iris',  0.80 + 0.30 * P.iris.dia,  uc, vc);
+  drawEye('pupil', 0.55 + 0.85 * P.pupil.dia, uc, vc);
   // ハイライトは光源側。視線には 25% だけ付いていく（動かないから球に見える）
-  stamp('L4', { x: 1, y: 1 }, bx + (cx - bx) * 0.25, by + (cy - by) * 0.25);
+  const hb = edgeAt(IRIS_U), vb = (hb.t + hb.b) / 2;
+  drawEye('highlight', 1, IRIS_U + (uc - IRIS_U) * 0.25, vb + (vc - vb) * 0.25);
 
-  // ウィンカー
-  if (LAMP !== 'off' && layerImg.L5 && layerOn.L5){
+  // ---- まぶた: 本番レンダラーと同じ式で縁を動かす ----
+  // 閉じきりの絵を、縁の曲線で切り取って見せる。上まぶたは closure、下まぶたは lowRaise。
+  const closure  = clamp(Math.max(0, (1 - P.lid.upper.open) * 0.80 - 0.20) + P.blink * 1.10, 0, 1.05);
+  const lowRaise = clamp((P.lid.lower.raise || 0) * 0.62 + P.blink * 0.30, 0, 0.90);
+  const tilt = P.lid.upper.tilt || 0;
+  const lidLift = Math.max(0, 1 - closure / 0.25) * ((Math.abs(tilt) * 1.04 + 0.012) * BANDH);
+  function lidY(u){
+    const q = edgeAt(u), uu = uNorm(u);
+    const bulge = 0.07 * BANDH * Math.max(0, 1 - uu * uu) * Math.min(1, closure * 2.2);
+    return q.t + closure * (q.b - q.t) + bulge - tilt * uu * BANDH - lidLift;
+  }
+  function lowY(u){
+    const q = edgeAt(u), uu = uNorm(u);
+    const bul = -0.05 * BANDH * Math.max(0, 1 - uu * uu) * Math.min(1, lowRaise * 3);
+    return q.b - lowRaise * (q.b - q.t) + bul + tilt * 0.40 * uu * BANDH;
+  }
+  if (partImg.lid_upper && partOn.lid_upper){
+    clipEdge(lidY, true); drawBand('lid_upper'); tg.restore();
+    if (closure > 0.01) strokeEdge(lidY);
+  }
+  if (partImg.lid_lower && partOn.lid_lower && lowRaise > 0.012){
+    clipEdge(lowY, false); drawBand('lid_lower'); tg.restore();
+    strokeEdge(lowY);
+  }
+
+  // ---- ウィンカー: まぶたより上（表情エディタの 3D と同じで、まばたきでも消えない）----
+  if (LAMP !== 'off' && partImg.winker && partOn.winker){
     const ph = (now % 714) / 714;
     if (ph < 0.5){
-      if (!lampSeq) put('L5');
+      if (!lampSeq) drawBand('winker');
       else {
         const t = Math.min(1, ph / 0.5 * 1.25);
         tg.save(); tg.beginPath();
-        tg.rect(BAND.u0 * TEX, 0, (BAND.u1 - BAND.u0) * TEX * t, TEX);   // 目頭 → 目尻へ流れる
-        tg.clip(); put('L5'); tg.restore();
+        tg.rect(BAND.u0 * TEX, 0, BW() * t, TEX);   // 目頭 → 目尻へ流れる
+        tg.clip(); drawBand('winker'); tg.restore();
       }
     }
   }
-
-  // まぶた: 全開の位置から下（上）へスライド。closure 0=全開 / 1=閉じきり
-  const closure = Math.max(0, Math.min(1.05, Math.max(0, (1 - P.lid.upper.open) * 0.80 - 0.20) + P.blink * 1.10));
-  const lowRaise = Math.max(0, Math.min(0.9, P.lid.lower.raise * 0.62 + P.blink * 0.30));
-  function slide(id, dy, tilt){
-    const im = layerImg[id]; if (!im || !layerOn[id]) return;
-    tg.save(); tg.translate(0, dy);
-    if (tilt){ tg.translate(bx, by); tg.rotate(tilt); tg.translate(-bx, -by); }
-    tg.drawImage(im, 0, 0, TEX, TEX); tg.restore();
-  }
-  slide('L7', -lowRaise * BANDH * TEX, 0);
-  slide('L6', closure * BANDH * TEX, (P.lid.upper.tilt || 0) * 0.06);
+  tg.restore();
 
   // ガイド（レンズの縁・塗り足し・セーフエリア・虹彩の基準）。3D にもそのまま乗る
   if (guideImg && $('uvGuide').checked) tg.drawImage(guideImg, 0, 0, TEX, TEX);
 }
+
 
 /* ============ UV パネル ============ */
 const uv = $('uvCv'), uvCtx = uv.getContext('2d');
@@ -464,6 +565,8 @@ window.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSide(fals
 [['ar', 'ar'], ['gx', 'gx'], ['gy', 'gy'], ['conv', 'conv'], ['ex', 'ex'], ['ey', 'ey']].forEach(([id, k]) => {
   $(id).addEventListener('input', function(){ EE[k] = +this.value; if (k === 'gx' || k === 'gy' || k === 'ar') EE.demo = false, $('demo').classList.remove('on'); $('v_' + id).textContent = (+this.value).toFixed(2); });
 });
+$('esize').addEventListener('input', function(){ EYESIZE = +this.value; $('v_esize').textContent = EYESIZE.toFixed(2); });
+PARTS.forEach((p) => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; $('dlgPart').appendChild(o); });
 $('w_off').addEventListener('click', () => setLamp('off', false));
 $('w_on').addEventListener('click', () => setLamp('on', false));
 $('w_seq').addEventListener('click', () => setLamp('on', true));
@@ -499,7 +602,7 @@ let last = performance.now();
 /* ============ 起動 ============ */
 function start(){
   resize3d(); layoutUV(); renderLayerList(); syncEmo(); setLamp('off', false);
-  ['ar', 'gx', 'gy', 'conv', 'ex', 'ey'].forEach((id) => { $('v_' + id).textContent = (+$(id).value).toFixed(2); });
+  ['ar', 'gx', 'gy', 'conv', 'ex', 'ey', 'esize'].forEach((id) => { $('v_' + id).textContent = (+$(id).value).toFixed(2); });
   loadSample();
   loadModel(MODEL);
 }
