@@ -116,6 +116,7 @@
   <h3>レイヤー</h3>
   <div id="layers"></div>
   <h3>読み込み</h3>
+  <div style="margin-bottom:6px"><label style="font-size:11px;color:var(--dim);display:flex;gap:5px;align-items:center"><input type="checkbox" id="autofit" checked> 読み込んだ絵を自動で位置合わせ</label></div>
   <div style="font-size:11px;color:var(--dim)">「パーツを読み込む」で、パーツを選んでから PNG を 1 枚ずつ読み込みます。画面にドラッグしても同じ画面が出ます。ファイル名は自由で構いません。<br>確認できたら「書き出し」で、正しい名前に揃えた zip が 1 つ落ちます。</div>
   <div id="msg"></div>
 </aside>
@@ -135,7 +136,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
 const MODEL = 'eye_panels.glb' + '?v=4';
-const AV = '?v=5';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const AV = '?v=6';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ レンズの形（本番レンダラーと同じ輪郭データ） ============ */
 const TEX  = 2048;                                 // 合成テクスチャの大きさ
@@ -196,13 +197,31 @@ function renderLayerList(){
   });
 }
 
+const partMeta = {};      // id -> {W,H,bx,by,bw,bh,op}
+function measure(im){
+  const W = im.naturalWidth || im.width, H = im.naturalHeight || im.height;
+  const k = Math.min(1, 512 / Math.max(W, H));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(W * k)); c.height = Math.max(1, Math.round(H * k));
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(im, 0, 0, c.width, c.height);
+  let d; try { d = g.getImageData(0, 0, c.width, c.height).data; }
+  catch(_){ return { W, H, bx: 0, by: 0, bw: W, bh: H, op: 1 }; }
+  let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1, op = 0;
+  for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++){
+    if (d[(y * c.width + x) * 4 + 3] > 8){ op++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  }
+  if (x1 < 0) return { W, H, bx: 0, by: 0, bw: W, bh: H, op: 0 };
+  return { W, H, bx: x0 / k, by: y0 / k, bw: (x1 - x0 + 1) / k, bh: (y1 - y0 + 1) / k, op: op / (c.width * c.height) };
+}
+function setPart(id, im, file){ partImg[id] = im; partMeta[id] = measure(im); if (file) partSrc[id] = file; else delete partSrc[id]; }
+
 function loadImage(src){
   return new Promise((ok, ng) => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => ok(im); im.onerror = ng; im.src = src; });
 }
 async function loadSample(){
   for (const p of PARTS){
-    try { partImg[p.id] = await loadImage(ASSET + '/' + p.file + AV); } catch(_){ delete partImg[p.id]; }
-    delete partSrc[p.id];
+    try { setPart(p.id, await loadImage(ASSET + '/' + p.file + AV), null); } catch(_){ delete partImg[p.id]; delete partMeta[p.id]; }
   }
   renderLayerList(); $('msg').style.color = ''; $('msg').textContent = 'サンプルを表示しています';
 }
@@ -221,10 +240,15 @@ async function applyDlg(){
   try {
     const url = URL.createObjectURL(pendingFile);
     const im = await loadImage(url);
-    partImg[id] = im; partSrc[id] = pendingFile; partOn[id] = true;
+    setPart(id, im, pendingFile); partOn[id] = true;
     URL.revokeObjectURL(url);
-    const p = PARTS[PIDX[id]];
-    $('msg').style.color = ''; $('msg').textContent = p.name + ' に ' + pendingFile.name + ' を読み込みました';
+    const p = PARTS[PIDX[id]], m = partMeta[id];
+    let warn = '';
+    if (m.op > 0.97) warn = '　※ 背景が透明になっていません（白い紙ごと書き出されています）';
+    else if (p.kind === 'eye' && Math.abs(m.W / m.H - 1) > 0.02) warn = '　※ 正方形ではないので、描かれた中身の大きさに合わせました';
+    else if (p.kind === 'band' && Math.abs(m.W / m.H - 7546 / 1525) > 0.1) warn = '　※ 帯の比率ではないので、描かれた中身の大きさに合わせました';
+    $('msg').style.color = warn ? '#e8c07a' : '';
+    $('msg').textContent = p.name + ' ← ' + pendingFile.name + '（' + m.W + '×' + m.H + '）' + warn;
     $('useSample').classList.remove('on');
     renderLayerList(); closeDlg();
   } catch (e){ $('dlgMsg').textContent = '読み込めませんでした（PNG を選んでください）'; }
@@ -283,6 +307,7 @@ async function doExport(){
   $('msg').textContent = dir + '.zip を書き出しました' + (miss.length ? '（未読み込み: ' + miss.map((p) => p.name).join('・') + '）' : '');
 }
 $('export').addEventListener('click', doExport);
+$('autofit').addEventListener('change', function(){ AUTOFIT = this.checked; });
 
 
 /* ============ EE ライト（表情エディタと同じ式） ============ */
@@ -317,14 +342,25 @@ const texCv = document.createElement('canvas'); texCv.width = texCv.height = TEX
 const tg = texCv.getContext('2d');
 let guideImg = null; loadImage(ASSET + '/guide.png' + AV).then((im) => { guideImg = im; }).catch(() => {});
 
-let LAMP = 'off', lampSeq = false;
+let LAMP = 'off', lampSeq = false, AUTOFIT = true;
 const BX = () => BAND.u0 * TEX, BY = () => BAND.v0 * TEX;
 const BW = () => (BAND.u1 - BAND.u0) * TEX, BH = () => BANDH * TEX;
 const uNorm = (u) => (u - (BAND.u0 + BAND.u1) / 2) / ((BAND.u1 - BAND.u0) / 2);
 
-function drawBand(id){                      // 帯タイプ: レンズの外接矩形にそのまま貼る
+// 帯タイプの貼り方。基準は「リフレクター」のキャンバス。
+// 帯の比率どおりに描かれていれば枠のまま、そうでなければ描かれた中身をレンズに合わせる
+function bandXf(){
+  const r = partMeta.reflector; if (!r) return null;
+  const exp = 7546 / 1525;
+  if (!AUTOFIT || Math.abs(r.W / r.H - exp) < exp * 0.02) return { sx: BW() / r.W, sy: BH() / r.H, ox: BX(), oy: BY(), W: r.W, H: r.H };
+  const sx = BW() / r.bw, sy = BH() / r.bh;
+  return { sx, sy, ox: BX() - r.bx * sx, oy: BY() - r.by * sy, W: r.W, H: r.H };
+}
+function drawBand(id){
   const im = partImg[id]; if (!im || !partOn[id]) return;
-  tg.drawImage(im, BX(), BY(), BW(), BH());
+  const x = bandXf();
+  if (!x) { tg.drawImage(im, BX(), BY(), BW(), BH()); return; }
+  tg.drawImage(im, x.ox, x.oy, x.W * x.sx, x.H * x.sy);
 }
 function clipEdge(fn, above){               // 縁の曲線で切り取る（上側／下側）
   tg.save(); tg.beginPath();
@@ -355,10 +391,20 @@ function drawTex(P, now){
   const eg = edgeAt(uc);
   const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE.y;
   const D  = (eg.b - eg.t) * TEX * EYESIZE;
+  // 目玉タイプの貼り方。基準は「赤目玉」のキャンバス。正方形ならその枠＝外径、
+  // そうでなければ描かれた中身の外接矩形＝外径とみなす。黒目とハイライトは同じ変換を使う
+  function eyeXf(){
+    const r = partMeta.iris; if (!r) return null;
+    const sq = !AUTOFIT || Math.abs(r.W / r.H - 1) < 0.02;
+    const unit = sq ? Math.max(r.W, r.H) : Math.max(r.bw, r.bh);
+    return { s: D / unit, cx: sq ? r.W / 2 : r.bx + r.bw / 2, cy: sq ? r.H / 2 : r.by + r.bh / 2, W: r.W, H: r.H };
+  }
   function drawEye(id, sc, px, py){
     const im = partImg[id]; if (!im || !partOn[id]) return;
-    const w = D * sc * P.eyeScale.x, h = D * sc * P.eyeScale.y;
-    tg.drawImage(im, px * TEX - w / 2, py * TEX - h / 2, w, h);
+    const x = eyeXf();
+    if (!x){ const w = D * sc * P.eyeScale.x, h = D * sc * P.eyeScale.y; tg.drawImage(im, px * TEX - w / 2, py * TEX - h / 2, w, h); return; }
+    const kx = x.s * sc * P.eyeScale.x, ky = x.s * sc * P.eyeScale.y;
+    tg.drawImage(im, px * TEX - x.cx * kx, py * TEX - x.cy * ky, x.W * kx, x.H * ky);
   }
   drawEye('iris',  0.80 + 0.30 * P.iris.dia,  uc, vc);
   drawEye('pupil', 0.55 + 0.85 * P.pupil.dia, uc, vc);
