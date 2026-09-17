@@ -321,7 +321,7 @@ function layoutUV(){
 }
 $('uvFit').addEventListener('click', () => { uvMode = 'fit'; $('uvFit').classList.add('on'); $('uvAll').classList.remove('on'); layoutUV(); });
 $('uvAll').addEventListener('click', () => { uvMode = 'all'; $('uvAll').classList.add('on'); $('uvFit').classList.remove('on'); layoutUV(); });
-window.addEventListener('resize', () => { layoutUV(); resize3d(); });
+window.addEventListener('resize', () => { layoutUV(); resize3d(); if (panel) faceFront(); });
 
 const checker = (() => { const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d');
   g.fillStyle = '#2a2f36'; g.fillRect(0, 0, 32, 32); g.fillStyle = '#20242a'; g.fillRect(0, 0, 16, 16); g.fillRect(16, 16, 16, 16); return c; })();
@@ -369,7 +369,8 @@ function loadModel(name){
      (e) => { $('prog').textContent = '読み込めませんでした: ' + (e && e.message || e); });
 }
 
-const FIT = () => PR / Math.tan(camera.fov * Math.PI / 360) * 1.30;   // パネルが画面に収まる距離
+// パネルが画面に収まる距離。縦長の画面では横がはみ出すので aspect も見る
+const FIT = () => PR / (Math.tan(camera.fov * Math.PI / 360) * Math.min(1, camera.aspect)) * 1.25;
 function place(dir, dist){ controls.target.copy(PC); camera.position.copy(PC).add(dir.clone().normalize().multiplyScalar(dist)); controls.update(); }
 function faceFront(){ place(PN, FIT()); }                                                                        // パネルに正対
 function faceAngle(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.55); d.y += 0.30; place(d, FIT()); }   // 斜め
