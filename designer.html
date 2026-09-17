@@ -347,9 +347,10 @@ function resize3d(){ const w = view.clientWidth, h = view.clientHeight; if (!w |
 
 const tex = new THREE.CanvasTexture(texCv); tex.flipY = false; tex.colorSpace = THREE.SRGBColorSpace;
 let panel = null, expo = 1.0;
-const PC = new THREE.Vector3();      // パネルの中心
-const PN = new THREE.Vector3(1, 0, 0);   // パネルの表向き
-let PR = 0.3;                        // パネルの大きさ
+// パネルの中心・正対方向・見かけの半径（eye_panel.glb から算出した固定値。投影面積が最大になる向き＝いちばんよく見える角度）
+const PC = new THREE.Vector3(0.3839, 0.7760, -0.6292);
+const PN = new THREE.Vector3(-0.5889, 0.1772, -0.7885).normalize();
+let PR = 0.3099;
 
 function loadModel(name){
   const loader = new GLTFLoader();
@@ -360,29 +361,19 @@ function loadModel(name){
     panel = mesh; scene.add(gltf.scene);
     const mt = new THREE.MeshStandardMaterial({ map: tex, emissiveMap: tex, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.85, roughness: 0.5, metalness: 0.0, side: THREE.DoubleSide });
     mesh.material = mt;
-    // 中心・向き・大きさ（面の平均法線をカメラの正面とする）
     mesh.updateWorldMatrix(true, false);
-    const g = mesh.geometry; g.computeBoundingBox(); g.computeBoundingSphere();
-    const bb = g.boundingBox.clone().applyMatrix4(mesh.matrixWorld);
-    bb.getCenter(PC); PR = bb.getSize(new THREE.Vector3()).length() * 0.5;
-    const nrm = g.getAttribute('normal');
-    if (nrm){
-      const acc = new THREE.Vector3(), v = new THREE.Vector3();
-      const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-      for (let i = 0; i < nrm.count; i++){ v.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize(); acc.add(v); }
-      if (acc.lengthSq() > 1e-6) PN.copy(acc.normalize());
-    }
     $('prog').style.display = 'none';
+    window.__dv = { camera, controls, scene, panel: mesh, PC, PN, PR };
     faceFront();
   }, (ev) => { if (ev.total) $('prog').textContent = 'パネルを読み込み中… ' + Math.round(ev.loaded / ev.total * 100) + '%'; },
      (e) => { $('prog').textContent = '読み込めませんでした: ' + (e && e.message || e); });
 }
 
+const FIT = () => PR / Math.tan(camera.fov * Math.PI / 360) * 1.30;   // パネルが画面に収まる距離
 function place(dir, dist){ controls.target.copy(PC); camera.position.copy(PC).add(dir.clone().normalize().multiplyScalar(dist)); controls.update(); }
-function faceFront(){ place(PN, PR * 2.3); }                                                   // 正面
-function faceAngle(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -0.6); d.y += 0.25; place(d, PR * 2.3); }   // 斜め
-function faceSide(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -1.25); place(d, PR * 2.1); }                // 横から
-function zoomIn(){ place(camera.position.clone().sub(controls.target), camera.position.distanceTo(controls.target) * 0.75); }
+function faceFront(){ place(PN, FIT()); }                                                                        // パネルに正対
+function faceAngle(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.55); d.y += 0.30; place(d, FIT()); }   // 斜め
+function faceSide(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 1.15); place(d, FIT() * 0.95); }          // 横から
 
 let hold = null, holdUntil = 0;
 document.querySelectorAll('.bar button[data-c]').forEach((b) => {
