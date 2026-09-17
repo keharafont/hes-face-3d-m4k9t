@@ -319,7 +319,7 @@ function layoutUV(){
   let s, ox, oy;
   if (uvMode === 'fit'){
     // 目頭・目尻の外側にレンズ幅の 6% ずつ余白を足した範囲を収める
-    const mg = (BAND.u1 - BAND.u0) * TEX * 0.06;
+    const mg = (BAND.u1 - BAND.u0) * TEX * 0.14;
     const bw = (BAND.u1 - BAND.u0) * TEX + mg * 2, bh = (BAND.v1 - BAND.v0) * TEX + mg * 2;
     s = Math.min(w / bw, h / bh) * 0.96;
     ox = (w - bw * s) / 2 - (PAD + BAND.u0 * TEX - mg) * s;
