@@ -5,7 +5,7 @@
 <meta name="robots" content="noindex, nofollow, noarchive">
 
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>目の確認ビューワー（片目）</title>
+<title>データ確認用ページ（片目）</title>
 <style>
   :root{ --bg:#15181d; --pane:#1b1f26; --line:#2b3138; --ink:#e8eaed; --dim:#98a2ad; --acc:#4da3ff; }
   *{ box-sizing:border-box }
@@ -46,13 +46,13 @@
 <body>
 <div id="app">
   <header>
-    <b>EYE VIEWER</b><small>片目（右）・LED パネル 3D ＋ UV 展開</small>
+    <b>データ確認用ページ</b><small>片目・LED パネル 3D ＋ UV 展開</small>
     <button id="pick">データを読み込む</button>
     <button id="useSample" class="on">サンプルに戻す</button>
     <input type="file" id="file" accept=".psd,.png,image/png" multiple style="display:none">
     <span style="flex:1"></span>
     <select id="emo"></select>
-    <button id="demo">自動デモ</button>
+    <button id="demo">グリーティング再生</button>
     <button id="side-t">設定</button>
   </header>
   <div id="main">
@@ -61,6 +61,8 @@
       <div id="view3d"></div>
       <div id="prog">パネルを読み込み中…</div>
       <div class="bar">
+        <button id="sideL" class="on">左目</button><button id="sideR">右目</button>
+        <span style="width:1px;height:20px;background:#3a4048"></span>
         <button data-c="front">正面</button><button data-c="angle">斜め</button><button data-c="side">横から</button>
         <button data-c="in">拡大 ＋</button><button data-c="out">縮小 −</button>
         <button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button><button data-c="up">▲ 上から</button><button data-c="down">▼ 下から</button>
@@ -71,8 +73,8 @@
       <div class="ptitle">UV 展開（レンズ面）</div>
       <div id="uvWrap"><canvas id="uvCv"></canvas></div>
       <div class="bar">
-        <button id="uvFit" class="on">レンズに合わせる</button><button id="uvAll">全体</button>
-        <label><input type="checkbox" id="uvGuide" checked> ガイド</label>
+        <button id="uvFit" class="on">レンズ</button><button id="uvAll">UV 全体（正方形）</button>
+        <label><input type="checkbox" id="uvGuide" checked> ガイド（3D にも出す）</label>
         <label><input type="checkbox" id="uvChecker"> 背景の市松</label>
       </div>
     </div>
@@ -112,7 +114,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
-const MODEL = 'eye_panel.glb' + '?v=2';        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const MODEL = 'eye_panels.glb' + '?v=4';        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ UV の基準（テンプレートと同じ） ============ */
 const TEX = 2048;                                  // 合成テクスチャの大きさ
@@ -224,12 +226,13 @@ document.addEventListener('drop', (e) => { if (e.dataTransfer && e.dataTransfer.
 const EE = { emo: NAMES[0], ar: 0.5, gx: 0, gy: 0, conv: 0.4, ex: 1, ey: 1, demo: false, t: 0, blink: -1, nextBlink: 2 };
 function frame(dt){
   if (EE.demo){
+    // グリーティング: 近づいてきた人を目で追う（ようこそ）
     EE.t += dt;
-    const k = Math.floor(EE.t / 3.2) % NAMES.length;
-    if (NAMES[k] !== EE.emo){ EE.emo = NAMES[k]; syncEmo(); }
-    EE.gx = Math.sin(EE.t * 0.7) * 0.7 + Math.sin(EE.t * 1.9) * 0.2;
-    EE.gy = Math.sin(EE.t * 0.53) * 0.35;
-    EE.ar = 0.5 + Math.sin(EE.t * 0.31) * 0.35;
+    if (EE.emo !== 'ようこそ'){ EE.emo = 'ようこそ'; syncEmo(); }
+    const w = EE.t * 0.45;
+    EE.gx = Math.sin(w) * 0.75 + Math.sin(w * 2.7) * 0.08;      // ゆっくり左右に追う
+    EE.gy = Math.sin(w * 0.6 + 1.1) * 0.22;
+    EE.ar = 0.62 + Math.sin(EE.t * 0.5) * 0.12;
   }
   EE.nextBlink -= dt;
   if (EE.nextBlink <= 0){ EE.blink = 0; EE.nextBlink = 2.5 + Math.random() * 4; }
@@ -301,6 +304,9 @@ function drawTex(P, now){
   }
   slide('L7', -lowRaise * BANDH * TEX, 0);
   slide('L6', closure * BANDH * TEX, (P.lid.upper.tilt || 0) * 0.06);
+
+  // ガイド（レンズの縁・塗り足し・セーフエリア・虹彩の基準）。3D にもそのまま乗る
+  if (guideImg && $('uvGuide').checked) tg.drawImage(guideImg, 0, 0, TEX, TEX);
 }
 
 /* ============ UV パネル ============ */
@@ -312,10 +318,10 @@ function layoutUV(){
   let s, ox, oy;
   if (uvMode === 'fit'){
     const bw = (BAND.u1 - BAND.u0) * TEX, bh = (BAND.v1 - BAND.v0) * TEX;
-    s = Math.min(w / bw, h / bh) * 0.94;
+    s = Math.min(w / bw, h / bh) * 0.84;   // 目尻の先まで見えるように余白を取る
     ox = (w - bw * s) / 2 - BAND.u0 * TEX * s; oy = (h - bh * s) / 2 - BAND.v0 * TEX * s;
   } else {
-    s = Math.min(w, h) / TEX * 0.96; ox = (w - TEX * s) / 2; oy = (h - TEX * s) / 2;
+    s = Math.min(w, h) / TEX * 0.90; ox = (w - TEX * s) / 2; oy = (h - TEX * s) / 2;
   }
   uv.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
 }
@@ -329,7 +335,9 @@ function drawUV(){
   uvCtx.clearRect(0, 0, TEX, TEX);
   if ($('uvChecker').checked){ const p = uvCtx.createPattern(checker, 'repeat'); uvCtx.fillStyle = p; uvCtx.fillRect(0, 0, TEX, TEX); }
   uvCtx.drawImage(texCv, 0, 0);
-  if ($('uvGuide').checked && guideImg) uvCtx.drawImage(guideImg, 0, 0, TEX, TEX);
+  if (uvMode === 'all'){   // UV 全体のときは正方形の外枠を描いて範囲が分かるようにする
+    uvCtx.strokeStyle = 'rgba(120,170,255,.55)'; uvCtx.lineWidth = 6; uvCtx.strokeRect(3, 3, TEX - 6, TEX - 6);
+  }
 }
 
 /* ============ 3D（ヘッドライトに貼る LED パネルだけ） ============ */
@@ -347,24 +355,44 @@ function resize3d(){ const w = view.clientWidth, h = view.clientHeight; if (!w |
 
 const tex = new THREE.CanvasTexture(texCv); tex.flipY = false; tex.colorSpace = THREE.SRGBColorSpace;
 let panel = null, expo = 1.0;
-// パネルの中心・正対方向・見かけの半径（eye_panel.glb から算出した固定値。投影面積が最大になる向き＝いちばんよく見える角度）
-const PC = new THREE.Vector3(0.3839, 0.7760, -0.6292);
-const PN = new THREE.Vector3(-0.5889, 0.1772, -0.7885).normalize();
-let PR = 0.3099;
+const panels = {}, backs = {};   // 表（テクスチャ）と裏（黒）
+// パネルの中心・正対方向・見かけの半径（panel_framing.mjs で算出した固定値。投影面積が最大になる向き＝いちばんよく見える角度）
+const FRAME = {
+  R: { c: [0.3839, 0.7760, -0.6292], d: [-0.5889, 0.1772, -0.7885], r: 0.3099 },
+  L: { c: [0.3840, 0.7762,  0.6292], d: [-0.6089, 0.1743,  0.7738], r: 0.3079 },
+};
+let SIDE = 'L';                       // 既定は左目（UV 展開と並べて見るため）
+const PC = new THREE.Vector3(), PN = new THREE.Vector3();
+let PR = 0.31;
+function useSide(k){
+  SIDE = k; const f = FRAME[k];
+  PC.fromArray(f.c); PN.fromArray(f.d).normalize(); PR = f.r;
+  if (panels.R) panels.R.visible = (k === 'R');
+  if (panels.L) panels.L.visible = (k === 'L');
+  if (backs.R) backs.R.visible = (k === 'R');
+  if (backs.L) backs.L.visible = (k === 'L');
+  $('sideL').classList.toggle('on', k === 'L'); $('sideR').classList.toggle('on', k === 'R');
+  if (panels[k]){ panel = panels[k]; faceFront(); }
+}
 
 function loadModel(name){
   const loader = new GLTFLoader();
   loader.load(name, (gltf) => {
-    let mesh = null;
-    gltf.scene.traverse((o) => { if (o.isMesh && !mesh) mesh = o; });
-    if (!mesh){ $('prog').textContent = 'パネルのメッシュが見つかりません'; return; }
-    panel = mesh; scene.add(gltf.scene);
-    const mt = new THREE.MeshStandardMaterial({ map: tex, emissiveMap: tex, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.85, roughness: 0.5, metalness: 0.0, side: THREE.DoubleSide });
-    mesh.material = mt;
-    mesh.updateWorldMatrix(true, false);
+    scene.add(gltf.scene);
+    const mt = new THREE.MeshStandardMaterial({ map: tex, emissiveMap: tex, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.85, roughness: 0.5, metalness: 0.0, side: THREE.FrontSide });
+    gltf.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      const k = /_L$/.test(o.name) ? 'L' : 'R';
+      o.material = mt; panels[k] = o; o.updateWorldMatrix(true, false);
+      // 裏側は黒（パネルの裏を見たときに絵が透けないように）
+      const back = new THREE.Mesh(o.geometry, new THREE.MeshBasicMaterial({ color: 0x0a0c0f, side: THREE.BackSide }));
+      back.applyMatrix4(o.matrixWorld); scene.add(back); backs[k] = back;
+    });
+    if (!panels.R && !panels.L){ $('prog').textContent = 'パネルのメッシュが見つかりません'; return; }
+    panel = panels.L || panels.R;
     $('prog').style.display = 'none';
-    window.__dv = { camera, controls, scene, panel: mesh, PC, PN, PR };
-    faceFront();
+    window.__dv = { camera, controls, scene, panels, backs, get panel(){ return panels[SIDE]; }, PC, PN, PR };
+    useSide('L');
   }, (ev) => { if (ev.total) $('prog').textContent = 'パネルを読み込み中… ' + Math.round(ev.loaded / ev.total * 100) + '%'; },
      (e) => { $('prog').textContent = '読み込めませんでした: ' + (e && e.message || e); });
 }
@@ -405,6 +433,8 @@ fillEmo($('emo')); fillEmo($('emo2'));
 function syncEmo(){ $('emo').value = EE.emo; $('emo2').value = EE.emo; }
 [$('emo'), $('emo2')].forEach((s) => s.addEventListener('change', () => { EE.emo = s.value; EE.demo = false; $('demo').classList.remove('on'); syncEmo(); }));
 $('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classList.toggle('on', EE.demo); });
+$('sideL').addEventListener('click', () => useSide('L'));
+$('sideR').addEventListener('click', () => useSide('R'));
 $('side-t').addEventListener('click', function(){ const s = $('side'); const open = s.style.display === 'none'; s.style.display = open ? 'block' : 'none'; this.classList.toggle('on', open); $('main').classList.toggle('side', open); setTimeout(() => { layoutUV(); resize3d(); }, 180); });
 [['ar', 'ar'], ['gx', 'gx'], ['gy', 'gy'], ['conv', 'conv'], ['ex', 'ex'], ['ey', 'ey']].forEach(([id, k]) => {
   $(id).addEventListener('input', function(){ EE[k] = +this.value; if (k === 'gx' || k === 'gy' || k === 'ar') EE.demo = false, $('demo').classList.remove('on'); $('v_' + id).textContent = (+this.value).toFixed(2); });
