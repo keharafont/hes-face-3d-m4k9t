@@ -51,8 +51,7 @@
     <button id="useSample" class="on">サンプルに戻す</button>
     <input type="file" id="file" accept=".psd,.png,image/png" multiple style="display:none">
     <span style="flex:1"></span>
-    <select id="emo"></select>
-    <button id="demo">グリーティング再生</button>
+    <button id="demo">動作デモ</button>
     <button id="side-t">設定</button>
   </header>
   <div id="main">
@@ -82,8 +81,7 @@
 </div>
 
 <aside id="side" style="display:none">
-  <h3>表情（EE の出力）</h3>
-  <select id="emo2"></select>
+  <h3>表情（EE の出力）— グリーティング</h3>
   <div class="row"><span>覚醒度</span><input type="range" id="ar" min="0" max="1" step="0.01" value="0.5"><span class="v" id="v_ar"></span></div>
   <div class="row"><span>視線 横</span><input type="range" id="gx" min="-1" max="1" step="0.01" value="0"><span class="v" id="v_gx"></span></div>
   <div class="row"><span>視線 縦</span><input type="range" id="gy" min="-0.6" max="0.6" step="0.01" value="0"><span class="v" id="v_gy"></span></div>
@@ -224,12 +222,11 @@ $('useSample').addEventListener('click', async () => { await loadSample(); $('us
 document.addEventListener('drop', (e) => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
 
 /* ============ EE ライト（表情エディタと同じ式） ============ */
-const EE = { emo: NAMES[0], ar: 0.5, gx: 0, gy: 0, conv: 0.4, ex: 1, ey: 1, demo: false, t: 0, blink: -1, nextBlink: 2 };
+const EE = { emo: 'ようこそ', ar: 0.5, gx: 0, gy: 0, conv: 0.4, ex: 1, ey: 1, demo: false, t: 0, blink: -1, nextBlink: 2 };
 function frame(dt){
   if (EE.demo){
     // グリーティング: 近づいてきた人を目で追う（ようこそ）
     EE.t += dt;
-    if (EE.emo !== 'ようこそ'){ EE.emo = 'ようこそ'; syncEmo(); }
     const w = EE.t * 0.45;
     EE.gx = Math.sin(w) * 0.75 + Math.sin(w * 2.7) * 0.08;      // ゆっくり左右に追う
     EE.gy = Math.sin(w * 0.6 + 1.1) * 0.22;
@@ -442,10 +439,7 @@ function holdStep(dt){
 }
 
 /* ============ UI ============ */
-function fillEmo(sel){ NAMES.forEach((n) => { const o = document.createElement('option'); o.value = n; o.textContent = n + (EMOTIONS[n].note ? '  — ' + EMOTIONS[n].note : ''); sel.appendChild(o); }); }
-fillEmo($('emo')); fillEmo($('emo2'));
-function syncEmo(){ $('emo').value = EE.emo; $('emo2').value = EE.emo; }
-[$('emo'), $('emo2')].forEach((s) => s.addEventListener('change', () => { EE.emo = s.value; EE.demo = false; $('demo').classList.remove('on'); syncEmo(); }));
+function syncEmo(){}   // 表情はグリーティング固定（選択 UI なし）
 $('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classList.toggle('on', EE.demo); });
 $('sideL').addEventListener('click', () => useSide('L'));
 $('sideR').addEventListener('click', () => useSide('R'));
