@@ -250,12 +250,15 @@ document.querySelectorAll('#bar button[data-x]').forEach((b) => b.addEventListen
 
 function resize(){ const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 window.addEventListener('resize', resize); resize();
-let lastRenderAt = 0, slowFrames = 0, prMin = 0.6;
+let lastRenderAt = 0, slowFrames = 0, prMin = 0.6, statN = 0, statSum = 0, statMax = 0, statAt = 0;
 let viewHold = null, viewHoldUntil = 0, viewTween = null;   // 視点ボタン（loop より前に宣言）
 (function loop(){ requestAnimationFrame(loop); const now = performance.now(); if (EMBED && now - lastRenderAt < 30) return;
   // 重い環境（GPU が弱い・高 DPI）では描画解像度を自動で落とす: 1 フレーム 60ms 超が 40 回続いたら 25% ずつ、下限 0.6
   if (EMBED && lastRenderAt && now - lastRenderAt > 60){ if (++slowFrames >= 40){ slowFrames = 0; const pr = renderer.getPixelRatio(); if (pr > prMin){ renderer.setPixelRatio(Math.max(prMin, pr * 0.75)); resize(); console.log('[3D] 描画解像度を下げました → pixelRatio', renderer.getPixelRatio().toFixed(2)); } } } else slowFrames = Math.max(0, slowFrames - 1);
-  const dtv = Math.min(0.1, (now - (lastRenderAt || now)) / 1000); lastRenderAt = now; viewStep(dtv); viewTweenStep(); liveTick(); controls.update(); renderer.render(scene, camera); })();   // 埋め込みは 30fps
+  const dtv = Math.min(0.1, (now - (lastRenderAt || now)) / 1000); lastRenderAt = now; viewStep(dtv); viewTweenStep(); liveTick(); controls.update(); renderer.render(scene, camera);
+  const took = performance.now() - now; statN++; statSum += took; statMax = Math.max(statMax, took);   // 重さの報告用（5 秒ごとにコンソールへ）
+  if (now - statAt > 5000){ if (statAt) console.log('[3D] 1フレームの処理時間 平均 ' + (statSum / statN).toFixed(1) + 'ms 最大 ' + statMax.toFixed(1) + 'ms  pixelRatio ' + renderer.getPixelRatio().toFixed(2) + '  ' + renderer.domElement.width + 'x' + renderer.domElement.height); statAt = now; statN = 0; statSum = 0; statMax = 0; }
+  })();   // 埋め込みは 30fps
 
 function visibleBox(obj){ const box = new THREE.Box3(); obj.updateWorldMatrix(true, true); obj.traverse((o) => { if (o.isMesh && o.visible){ o.geometry.computeBoundingBox(); const b = o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); box.union(b); } }); return box; }
 function fitTo(obj){

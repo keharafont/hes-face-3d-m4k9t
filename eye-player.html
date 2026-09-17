@@ -153,7 +153,7 @@
   var W = 0, H = 0, DPR = 1;
 
   function resize(){
-    DPR = FIXDPR || Math.min(2, window.devicePixelRatio || 1);
+    DPR = FIXDPR || (NOLAMP ? 1 : Math.min(2, window.devicePixelRatio || 1));   // 3D 焼き込み用は等倍で十分（テクスチャ側が 768px）
     W = FIXSIZE ? +FIXSIZE[1] : window.innerWidth; H = FIXSIZE ? +FIXSIZE[2] : window.innerHeight;
     cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
     ex.setTransform(DPR,0,0,DPR,0,0);
