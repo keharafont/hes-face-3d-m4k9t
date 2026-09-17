@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow, noarchive">
+
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>目の確認ビューワー（片目）</title>
+<style>
+  :root{ --bg:#15181d; --pane:#1b1f26; --line:#2b3138; --ink:#e8eaed; --dim:#98a2ad; --acc:#4da3ff; }
+  *{ box-sizing:border-box }
+  html,body{ margin:0; height:100%; background:var(--bg); color:var(--ink); font:13px/1.55 -apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; overflow:hidden }
+  #app{ display:grid; grid-template-rows:auto 1fr; height:100% }
+  header{ display:flex; align-items:center; gap:10px; padding:8px 14px; border-bottom:1px solid var(--line); background:#12151a; flex-wrap:wrap }
+  header b{ letter-spacing:.14em; font-size:13px } header small{ color:var(--dim) }
+  button, select{ font:12px -apple-system,"Hiragino Sans",sans-serif; padding:5px 11px; border:1px solid #3a4048; border-radius:5px; background:#232830; color:var(--ink); cursor:pointer }
+  button:hover{ background:#2e343d } button.on{ background:var(--acc); border-color:var(--acc); color:#08121e }
+  #main{ display:grid; grid-template-columns:1fr 1fr; min-height:0 }
+  .pane{ position:relative; min-width:0; min-height:0; border-right:1px solid var(--line); display:flex; flex-direction:column }
+  .pane:last-child{ border-right:0 }
+  .ptitle{ position:absolute; left:12px; top:10px; z-index:3; font-size:11px; letter-spacing:.12em; color:var(--dim); pointer-events:none; text-shadow:0 1px 3px #000 }
+  #view3d{ flex:1; min-height:0 }
+  #uvWrap{ flex:1; min-height:0; position:relative; overflow:hidden; background:#0e1116 }
+  #uvCv{ position:absolute; transform-origin:0 0; image-rendering:auto }
+  .bar{ display:flex; gap:6px; padding:7px 10px; border-top:1px solid var(--line); background:#12151a; flex-wrap:wrap; align-items:center }
+  .bar label{ font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px }
+  #side{ position:absolute; right:0; top:0; bottom:0; width:260px; background:rgba(18,21,26,.96); border-left:1px solid var(--line); padding:12px; overflow:auto; z-index:4 }
+  #side h3{ font-size:11px; letter-spacing:.14em; color:var(--dim); margin:14px 0 6px; font-weight:600 }
+  #side h3:first-child{ margin-top:0 }
+  .row{ display:grid; grid-template-columns:76px 1fr 40px; gap:6px; align-items:center; margin:5px 0 }
+  .row span{ font-size:11px; color:var(--dim) } .row .v{ text-align:right; font:11px ui-monospace,Menlo,monospace }
+  input[type=range]{ width:100%; accent-color:var(--acc) }
+  #emo{ width:100% }
+  #layers{ font-size:11px } #layers div{ display:flex; align-items:center; gap:6px; padding:2px 0; color:var(--dim) }
+  #layers input{ accent-color:var(--acc) }
+  #drop{ position:fixed; inset:0; background:rgba(10,14,20,.88); z-index:20; display:none; align-items:center; justify-content:center; font-size:18px; border:3px dashed var(--acc) }
+  #msg{ font-size:11px; color:#8fd0a0; min-height:16px; margin-top:8px; word-break:break-all }
+  #pwBox{ position:fixed; inset:0; background:#12151a; z-index:30; display:flex; align-items:center; justify-content:center }
+  #pwBox form{ background:#1b1f26; border:1px solid var(--line); border-radius:8px; padding:24px; width:320px }
+  #pwBox input{ width:100%; padding:9px; margin:10px 0; background:#0e1116; border:1px solid #3a4048; border-radius:5px; color:var(--ink); font:15px ui-monospace,monospace }
+  #pwBox button{ width:100%; padding:9px }
+  #prog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:5; color:var(--dim); font-size:12px }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <b>EYE VIEWER</b><small>片目（右）・3D ＋ UV 展開</small>
+    <button id="pick">データを読み込む</button>
+    <button id="useSample" class="on">サンプルに戻す</button>
+    <input type="file" id="file" accept=".psd,.png,image/png" multiple style="display:none">
+    <span style="flex:1"></span>
+    <select id="emo"></select>
+    <button id="demo">自動デモ</button>
+    <button id="side-t">設定</button>
+  </header>
+  <div id="main">
+    <div class="pane">
+      <div class="ptitle">3D（ヘッドライト）</div>
+      <div id="view3d"></div>
+      <div id="prog">読み込み中…</div>
+      <div class="bar">
+        <button data-c="eyes">目に寄る</button><button data-c="front">正面</button><button data-c="fit">全体</button>
+        <button data-c="in">拡大 ＋</button><button data-c="out">縮小 −</button>
+        <button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button>
+        <button data-c="rot">自動回転</button><button data-c="bright">明るさ</button>
+      </div>
+    </div>
+    <div class="pane">
+      <div class="ptitle">UV 展開（レンズ面）</div>
+      <div id="uvWrap"><canvas id="uvCv"></canvas></div>
+      <div class="bar">
+        <button id="uvFit" class="on">レンズに合わせる</button><button id="uvAll">全体</button>
+        <label><input type="checkbox" id="uvGuide" checked> ガイド</label>
+        <label><input type="checkbox" id="uvChecker"> 背景の市松</label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<aside id="side" style="display:none">
+  <h3>表情（EE の出力）</h3>
+  <select id="emo2"></select>
+  <div class="row"><span>覚醒度</span><input type="range" id="ar" min="0" max="1" step="0.01" value="0.5"><span class="v" id="v_ar"></span></div>
+  <div class="row"><span>視線 横</span><input type="range" id="gx" min="-1" max="1" step="0.01" value="0"><span class="v" id="v_gx"></span></div>
+  <div class="row"><span>視線 縦</span><input type="range" id="gy" min="-0.6" max="0.6" step="0.01" value="0"><span class="v" id="v_gy"></span></div>
+  <div class="row"><span>寄り目</span><input type="range" id="conv" min="-0.2" max="0.8" step="0.005" value="0.4"><span class="v" id="v_conv"></span></div>
+  <div class="row"><span>横比率</span><input type="range" id="ex" min="0.5" max="2" step="0.01" value="1"><span class="v" id="v_ex"></span></div>
+  <div class="row"><span>縦比率</span><input type="range" id="ey" min="0.5" max="2" step="0.01" value="1"><span class="v" id="v_ey"></span></div>
+  <h3>ウィンカー</h3>
+  <div style="display:flex;gap:6px"><button id="w_off" class="on">消灯</button><button id="w_on">点滅</button><button id="w_seq">シーケンシャル</button></div>
+  <h3>レイヤー</h3>
+  <div id="layers"></div>
+  <h3>読み込み</h3>
+  <div style="font-size:11px;color:var(--dim)">PSD をこの画面にドラッグするか「データを読み込む」から選んでください。レイヤーごとの PNG（複数選択）でも読めます。<br>L1〜L7 の名前で振り分けます。</div>
+  <div id="msg"></div>
+</aside>
+
+<div id="drop">ここに PSD／PNG をドロップ</div>
+<div id="pwBox"><form id="pwForm"><div style="letter-spacing:.14em;font-size:12px">EYE VIEWER</div><input id="pw" type="password" placeholder="パスワード" autocomplete="current-password"><button type="submit">開く</button><div id="pwMsg" style="font-size:11px;color:#e08080;min-height:16px;margin-top:6px"></div></form></div>
+
+<script src="ag-psd.js"></script>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const $ = (id) => document.getElementById(id);
+const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
+const MODEL = 'yaris.bin';                 // 3D モデル（.bin なら要パスワード）
+
+/* ============ UV の基準（テンプレートと同じ） ============ */
+const TEX = 2048;                                  // 合成テクスチャの大きさ
+const IRIS = { x: 0.3999, y: 0.48755, r: 0.07324 };// 虹彩の基準（UV）
+const GAZE = { x: 0.14478, y: 0.06445 };           // 視線 ±1 の移動量（UV）
+const BAND = { u0: 0.0828, u1: 1.004, v0: 0.4184, v1: 0.6045 };   // レンズ面の範囲（UV）
+const BANDH = BAND.v1 - BAND.v0;
+
+/* ============ 感情（EE と同じ定義） ============ */
+const EMOTIONS = {"覚醒": {"tilt": 0.0, "lower": 0.0, "pupil": 0.24, "iris": 0.2, "note": "振り出しの一瞬・全開の見開き"}, "昂揚": {"tilt": 0.24, "lower": 0.1, "pupil": 0.12, "iris": 0.1, "note": "ドリフト維持・瞬き抑制・凝視"}, "我慢": {"tilt": 0.46, "lower": 0.44, "pupil": -0.24, "iris": -0.22, "note": "制動・目頭を落として下から詰める"}, "集中": {"tilt": 0.18, "lower": 0.2, "pupil": -0.12, "iris": -0.05, "note": "コーナリングG・目頭下がり"}, "疾走": {"tilt": 0.08, "lower": 0.06, "pupil": 0.02, "iris": -0.05, "note": "全開加速・前傾の目"}, "余裕": {"tilt": -0.22, "lower": 0.02, "pupil": -0.06, "iris": -0.18, "note": "巡航・ハの字で力が抜けた目"}, "待機": {"tilt": -0.34, "lower": 0.24, "pupil": -0.16, "iris": -0.26, "open": -0.16, "note": "停車中・半眼でまどろむ"}, "気合い": {"tilt": 0.34, "lower": 0.14, "pupil": 0.2, "iris": 0.14, "open": 0.1, "note": "発進の気合い・カッと見開く"}, "動揺": {"tilt": -0.3, "lower": 0.3, "pupil": 0.12, "iris": 0.06, "note": "切り返し連打・目が泳ぐ"}, "爽快": {"tilt": -0.14, "lower": 0.06, "pupil": 0.08, "iris": -0.05, "open": 0.06, "note": "高速巡航・晴れやかな目"}, "緊張": {"tilt": 0.3, "lower": 0.3, "pupil": -0.08, "iris": -0.1, "open": 0.05, "note": "難所の接近・息を呑んで身構える"}, "しまった": {"tilt": -0.42, "lower": 0.18, "pupil": 0.1, "iris": 0.02, "open": -0.04, "note": "ヒヤリ・やらかし。ハの字で視線が落ちる"}, "めまい": {"tilt": -0.12, "lower": 0.12, "pupil": 0.06, "iris": 0.0, "open": -0.2, "note": "回転明け・目が回ってぐるぐる（レア）"}, "ようこそ": {"tilt": -0.1, "lower": 0.08, "pupil": 0.16, "iris": 0.1, "open": 0.08, "note": "停車中に人が来た・グリーティング（目で追う）"}};
+const NAMES = Object.keys(EMOTIONS);
+
+/* ============ レイヤー ============ */
+const SLOTS = [
+  { id: 'L1', name: 'リフレクター', file: 'sample_L1.jpg' },
+  { id: 'L2', name: '赤目（虹彩）', file: 'sample_L2.png' },
+  { id: 'L3', name: '黒目（瞳孔）', file: 'sample_L3.png' },
+  { id: 'L4', name: 'ハイライト', file: 'sample_L4.png' },
+  { id: 'L5', name: 'ウィンカー点灯', file: 'sample_L5.png' },
+  { id: 'L6', name: '上まぶた', file: 'sample_L6.png' },
+  { id: 'L7', name: '下まぶた', file: 'sample_L7.png' },
+];
+const layerImg = {};      // id -> HTMLImageElement / Canvas（UV 全体を覆う大きさ）
+const layerOn = {};       // id -> 表示するか
+SLOTS.forEach((s) => { layerOn[s.id] = true; });
+
+function renderLayerList(){
+  $('layers').innerHTML = '';
+  SLOTS.forEach((s) => {
+    const d = document.createElement('div');
+    const c = document.createElement('input'); c.type = 'checkbox'; c.checked = layerOn[s.id];
+    c.addEventListener('change', () => { layerOn[s.id] = c.checked; });
+    const t = document.createElement('span');
+    t.textContent = s.id + ' ' + s.name + (layerImg[s.id] ? '' : '（なし）');
+    t.style.color = layerImg[s.id] ? '#cfd6de' : '#6b7480';
+    d.appendChild(c); d.appendChild(t); $('layers').appendChild(d);
+  });
+}
+
+function loadImage(src){
+  return new Promise((ok, ng) => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => ok(im); im.onerror = ng; im.src = src; });
+}
+async function loadSample(){
+  for (const s of SLOTS){
+    try { layerImg[s.id] = await loadImage(ASSET + '/' + s.file); } catch(_){ delete layerImg[s.id]; }
+  }
+  renderLayerList(); $('msg').textContent = 'サンプルを表示しています';
+}
+
+/* ---- 読み込み: PSD / PNG ---- */
+function slotOf(name){
+  const m = String(name || '').match(/\bL([1-7])\b/i) || String(name || '').match(/^L?([1-7])[_\-\s]/i);
+  return m ? 'L' + m[1] : null;
+}
+async function loadPSD(file){
+  const buf = await file.arrayBuffer();
+  const psd = window.agPsd.readPsd(buf, { skipCompositeImageData: true, skipThumbnail: true, useImageData: false });
+  const W = psd.width, H = psd.height;
+  let found = 0, skipped = [];
+  const flat = [];
+  (function walk(ls){ (ls || []).forEach((l) => { if (l.children) walk(l.children); else flat.push(l); }); })(psd.children);
+  SLOTS.forEach((s) => { delete layerImg[s.id]; });
+  for (const l of flat){
+    const slot = slotOf(l.name);
+    if (!slot || !l.canvas){ if (l.name) skipped.push(l.name); continue; }
+    const cv = document.createElement('canvas'); cv.width = TEX; cv.height = TEX;
+    const g = cv.getContext('2d');
+    g.drawImage(l.canvas, (l.left || 0) / W * TEX, (l.top || 0) / H * TEX,
+                (l.right - l.left) / W * TEX, (l.bottom - l.top) / H * TEX);
+    layerImg[slot] = cv; found++;
+  }
+  renderLayerList();
+  $('msg').textContent = `${file.name}: ${found} レイヤーを読み込みました` + (skipped.length ? `／振り分けできず: ${skipped.slice(0, 6).join(', ')}` : '');
+  $('useSample').classList.remove('on');
+}
+async function loadPNGs(files){
+  let found = 0, skipped = [];
+  for (const f of files){
+    const slot = slotOf(f.name);
+    if (!slot){ skipped.push(f.name); continue; }
+    const url = URL.createObjectURL(f);
+    try {
+      const im = await loadImage(url);
+      const cv = document.createElement('canvas'); cv.width = TEX; cv.height = TEX;
+      cv.getContext('2d').drawImage(im, 0, 0, TEX, TEX);
+      layerImg[slot] = cv; found++;
+    } catch(_){ skipped.push(f.name); }
+    URL.revokeObjectURL(url);
+  }
+  renderLayerList();
+  $('msg').textContent = `${found} 枚を読み込みました` + (skipped.length ? `／名前に L1〜L7 が無い: ${skipped.slice(0, 6).join(', ')}` : '');
+  $('useSample').classList.remove('on');
+}
+async function handleFiles(files){
+  const arr = [...files];
+  const psd = arr.find((f) => /\.psd$/i.test(f.name));
+  try {
+    if (psd) await loadPSD(psd); else await loadPNGs(arr.filter((f) => /\.png$/i.test(f.name)));
+  } catch (e){ $('msg').style.color = '#e08080'; $('msg').textContent = '読み込めませんでした: ' + e.message; }
+}
+$('pick').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', (e) => { handleFiles(e.target.files); e.target.value = ''; });
+$('useSample').addEventListener('click', async () => { await loadSample(); $('useSample').classList.add('on'); });
+['dragenter', 'dragover'].forEach((n) => document.addEventListener(n, (e) => { e.preventDefault(); $('drop').style.display = 'flex'; }));
+['dragleave', 'drop'].forEach((n) => document.addEventListener(n, (e) => { e.preventDefault(); if (n === 'dragleave' && e.relatedTarget) return; $('drop').style.display = 'none'; }));
+document.addEventListener('drop', (e) => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+
+/* ============ EE ライト（表情エディタと同じ式） ============ */
+const EE = { emo: NAMES[0], ar: 0.5, gx: 0, gy: 0, conv: 0.4, ex: 1, ey: 1, demo: false, t: 0, blink: -1, nextBlink: 2 };
+function frame(dt){
+  if (EE.demo){
+    EE.t += dt;
+    const k = Math.floor(EE.t / 3.2) % NAMES.length;
+    if (NAMES[k] !== EE.emo){ EE.emo = NAMES[k]; syncEmo(); }
+    EE.gx = Math.sin(EE.t * 0.7) * 0.7 + Math.sin(EE.t * 1.9) * 0.2;
+    EE.gy = Math.sin(EE.t * 0.53) * 0.35;
+    EE.ar = 0.5 + Math.sin(EE.t * 0.31) * 0.35;
+  }
+  EE.nextBlink -= dt;
+  if (EE.nextBlink <= 0){ EE.blink = 0; EE.nextBlink = 2.5 + Math.random() * 4; }
+  if (EE.blink >= 0){ EE.blink += dt / 0.16; if (EE.blink > 1) EE.blink = -1; }
+  const blink = EE.blink >= 0 ? Math.sin(Math.PI * Math.min(1, EE.blink)) : 0;
+  const sh = EMOTIONS[EE.emo] || {};
+  const widen = 0, squint = 0;
+  const open = Math.max(0.05, Math.min(1, 0.42 + EE.ar * 0.40 + widen * 0.33 - squint * 0.34 + (sh.open || 0)));
+  return {
+    gaze: { x: EE.gx, y: EE.gy, conv: EE.conv },
+    lid: { upper: { open, tilt: sh.tilt || 0 }, lower: { raise: sh.lower || 0 } },
+    iris: { dia: Math.max(0, Math.min(1, 0.30 + EE.ar * 0.45 + (sh.iris || 0))) },
+    pupil: { dia: Math.max(0, Math.min(1, 0.34 + EE.ar * 0.34 + (sh.pupil || 0))) },
+    blink, eyeScale: { x: EE.ex, y: EE.ey }, emotion: EE.emo,
+  };
+}
+
+/* ============ 合成（UV テクスチャ） ============ */
+const texCv = document.createElement('canvas'); texCv.width = texCv.height = TEX;
+const tg = texCv.getContext('2d');
+let guideImg = null; loadImage(ASSET + '/guide.png').then((im) => { guideImg = im; }).catch(() => {});
+
+let LAMP = 'off', lampSeq = false;
+function drawTex(P, now){
+  tg.clearRect(0, 0, TEX, TEX);
+  tg.fillStyle = '#000'; tg.fillRect(0, 0, TEX, TEX);
+  const put = (id) => { const im = layerImg[id]; if (im && layerOn[id]) tg.drawImage(im, 0, 0, TEX, TEX); };
+
+  put('L1');                                                     // リフレクター（動かない）
+
+  // 目玉: 視線で平行移動、感情で拡縮。寄り目は目頭側へ寄せる（右目は −u 方向）
+  const cx = (IRIS.x - P.gaze.conv * GAZE.x * 0.5 + P.gaze.x * GAZE.x) * TEX;
+  const cy = (IRIS.y + P.gaze.y * GAZE.y) * TEX;
+  const bx = IRIS.x * TEX, by = IRIS.y * TEX;
+  function stamp(id, sc, px, py){
+    const im = layerImg[id]; if (!im || !layerOn[id]) return;
+    tg.save(); tg.translate(px, py); tg.scale(sc.x, sc.y); tg.translate(-bx, -by);
+    tg.drawImage(im, 0, 0, TEX, TEX); tg.restore();
+  }
+  const irisSc = (0.80 + 0.30 * P.iris.dia);
+  const pupSc  = (0.55 + 0.85 * P.pupil.dia);
+  stamp('L2', { x: irisSc * P.eyeScale.x, y: irisSc * P.eyeScale.y }, cx, cy);
+  stamp('L3', { x: pupSc * P.eyeScale.x, y: pupSc * P.eyeScale.y }, cx, cy);
+  // ハイライトは光源側。視線には 25% だけ付いていく（動かないから球に見える）
+  stamp('L4', { x: 1, y: 1 }, bx + (cx - bx) * 0.25, by + (cy - by) * 0.25);
+
+  // ウィンカー
+  if (LAMP !== 'off' && layerImg.L5 && layerOn.L5){
+    const ph = (now % 714) / 714;
+    if (ph < 0.5){
+      if (!lampSeq) put('L5');
+      else {
+        const t = Math.min(1, ph / 0.5 * 1.25);
+        tg.save(); tg.beginPath();
+        tg.rect(BAND.u0 * TEX, 0, (BAND.u1 - BAND.u0) * TEX * t, TEX);   // 目頭 → 目尻へ流れる
+        tg.clip(); put('L5'); tg.restore();
+      }
+    }
+  }
+
+  // まぶた: 全開の位置から下（上）へスライド。closure 0=全開 / 1=閉じきり
+  const closure = Math.max(0, Math.min(1.05, Math.max(0, (1 - P.lid.upper.open) * 0.80 - 0.20) + P.blink * 1.10));
+  const lowRaise = Math.max(0, Math.min(0.9, P.lid.lower.raise * 0.62 + P.blink * 0.30));
+  function slide(id, dy, tilt){
+    const im = layerImg[id]; if (!im || !layerOn[id]) return;
+    tg.save(); tg.translate(0, dy);
+    if (tilt){ tg.translate(bx, by); tg.rotate(tilt); tg.translate(-bx, -by); }
+    tg.drawImage(im, 0, 0, TEX, TEX); tg.restore();
+  }
+  slide('L7', -lowRaise * BANDH * TEX, 0);
+  slide('L6', closure * BANDH * TEX, (P.lid.upper.tilt || 0) * 0.06);
+}
+
+/* ============ UV パネル ============ */
+const uv = $('uvCv'), uvCtx = uv.getContext('2d');
+uv.width = TEX; uv.height = TEX;
+let uvMode = 'fit';
+function layoutUV(){
+  const w = $('uvWrap').clientWidth, h = $('uvWrap').clientHeight;
+  let s, ox, oy;
+  if (uvMode === 'fit'){
+    const bw = (BAND.u1 - BAND.u0) * TEX, bh = (BAND.v1 - BAND.v0) * TEX;
+    s = Math.min(w / bw, h / bh) * 0.94;
+    ox = (w - bw * s) / 2 - BAND.u0 * TEX * s; oy = (h - bh * s) / 2 - BAND.v0 * TEX * s;
+  } else {
+    s = Math.min(w, h) / TEX * 0.96; ox = (w - TEX * s) / 2; oy = (h - TEX * s) / 2;
+  }
+  uv.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
+}
+$('uvFit').addEventListener('click', () => { uvMode = 'fit'; $('uvFit').classList.add('on'); $('uvAll').classList.remove('on'); layoutUV(); });
+$('uvAll').addEventListener('click', () => { uvMode = 'all'; $('uvAll').classList.add('on'); $('uvFit').classList.remove('on'); layoutUV(); });
+window.addEventListener('resize', () => { layoutUV(); resize3d(); });
+
+const checker = (() => { const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d');
+  g.fillStyle = '#2a2f36'; g.fillRect(0, 0, 32, 32); g.fillStyle = '#20242a'; g.fillRect(0, 0, 16, 16); g.fillRect(16, 16, 16, 16); return c; })();
+function drawUV(){
+  uvCtx.clearRect(0, 0, TEX, TEX);
+  if ($('uvChecker').checked){ const p = uvCtx.createPattern(checker, 'repeat'); uvCtx.fillStyle = p; uvCtx.fillRect(0, 0, TEX, TEX); }
+  uvCtx.drawImage(texCv, 0, 0);
+  if ($('uvGuide').checked && guideImg) uvCtx.drawImage(guideImg, 0, 0, TEX, TEX);
+}
+
+/* ============ 3D ============ */
+const view = $('view3d');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(1.5, devicePixelRatio));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15181d);
+const pmrem = new THREE.PMREMGenerator(renderer); scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1000); camera.position.set(4, 2, 5);
+const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true;
+function resize3d(){ const w = view.clientWidth, h = view.clientHeight; if (!w || !h) return; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+
+const tex = new THREE.CanvasTexture(texCv); tex.flipY = false; tex.colorSpace = THREE.SRGBColorSpace;
+let model = null, eyeR = null, expo = 1.0;
+
+async function loadModel(name){
+  const loader = new GLTFLoader();
+  const dr = new DRACOLoader(); dr.setDecoderPath('./'); loader.setDRACOLoader(dr);
+  const onOk = (gltf) => {
+    model = gltf.scene; scene.add(model);
+    model.traverse((o) => { if (o.isMesh){ if (/^平面/.test(o.name) || (o.material && /Fabric/i.test(o.material.name || ''))) o.visible = false;
+      if (o.name === '右目'){ eyeR = o; o.material = o.material.clone(); o.material.map = tex; o.material.emissiveMap = tex; o.material.emissive = new THREE.Color(0xffffff); o.material.emissiveIntensity = 0.8; o.material.needsUpdate = true; }
+      if (o.name === '左目') o.visible = false;   // 片目だけ
+    } });
+    $('prog').style.display = 'none';
+    zoomEye();
+  };
+  const onErr = (e) => { $('prog').textContent = '3D を読み込めませんでした: ' + (e && e.message || e); };
+  if (!/\.bin$/.test(name)){ loader.load(name, onOk, onProg, onErr); return; }
+  try {
+    const pw = sessionStorage.getItem('hes-share-pw'); if (!pw) throw new Error('パスワードが必要です');
+    const res = await fetch(name); if (!res.ok) throw new Error('モデルを取得できません');
+    const total = +res.headers.get('content-length') || 0;
+    const rd = res.body.getReader(); const chunks = []; let got = 0;
+    while (true){ const { done, value } = await rd.read(); if (done) break; chunks.push(value); got += value.length; onProg({ loaded: got, total }); }
+    const buf = new Uint8Array(got); let o = 0; for (const c of chunks){ buf.set(c, o); o += c.length; }
+    const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: buf.slice(0, 16), iterations: 300000, hash: 'SHA-256' }, km, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(16, 28) }, key, buf.slice(28));
+    loader.parse(pt, './', onOk, onErr);
+  } catch (e){ onErr(e); }
+}
+function onProg(ev){ if (ev.total) $('prog').textContent = '3D 読み込み中… ' + Math.round(ev.loaded / ev.total * 100) + '%'; }
+
+function meshCenter(m){ m.updateWorldMatrix(true, false); m.geometry.computeBoundingBox(); return m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld).getCenter(new THREE.Vector3()); }
+function visibleBox(obj){ const b = new THREE.Box3(); obj.updateWorldMatrix(true, true); obj.traverse((o) => { if (o.isMesh && o.visible){ o.geometry.computeBoundingBox(); b.union(o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld)); } }); return b; }
+function frontDir(){ if (!eyeR || !model) return new THREE.Vector3(0, 0, 1);
+  const p = meshCenter(eyeR), c = visibleBox(model).getCenter(new THREE.Vector3());
+  const d = new THREE.Vector3(p.x - c.x, 0, 0); return (d.x >= 0 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(-1, 0, 0)); }
+function zoomEye(){ if (!eyeR) return; const p = meshCenter(eyeR); controls.target.copy(p);
+  camera.position.copy(p).add(frontDir().multiplyScalar(0.85)).add(new THREE.Vector3(0, 0.10, 0)); controls.update(); }
+function fitAll(){ if (!model) return; const b = visibleBox(model), c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
+  controls.target.copy(c); camera.position.copy(c).add(new THREE.Vector3(s.x * 0.9, s.y * 0.7, s.z * 1.1)); controls.update(); }
+function faceFront(){ if (!model) return; const b = visibleBox(model), c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
+  controls.target.copy(c); camera.position.copy(c).add(frontDir().multiplyScalar(Math.max(s.x, s.z) * 1.4)).add(new THREE.Vector3(0, s.y * 0.15, 0)); controls.update(); }
+
+let hold = null, holdUntil = 0;
+document.querySelectorAll('.bar button[data-c]').forEach((b) => {
+  const c = b.dataset.c;
+  if (['in', 'out', 'left', 'right'].includes(c)){
+    b.addEventListener('pointerdown', (e) => { e.preventDefault(); hold = c; holdUntil = performance.now() + 160; });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach((n) => b.addEventListener(n, () => { const w = holdUntil - performance.now(); if (w > 0) setTimeout(() => { hold = null; }, w); else hold = null; }));
+  } else b.addEventListener('click', () => {
+    if (c === 'eyes') zoomEye(); else if (c === 'front') faceFront(); else if (c === 'fit') fitAll();
+    else if (c === 'rot'){ controls.autoRotate = !controls.autoRotate; b.classList.toggle('on', controls.autoRotate); }
+    else if (c === 'bright'){ expo = expo >= 1.6 ? 0.6 : expo + 0.3; renderer.toneMappingExposure = expo; }
+  });
+});
+function holdStep(dt){
+  if (!hold || !model) return;
+  const t = controls.target, off = camera.position.clone().sub(t);
+  if (hold === 'in') off.multiplyScalar(Math.exp(-1.1 * dt));
+  else if (hold === 'out') off.multiplyScalar(Math.exp(1.1 * dt));
+  else off.applyAxisAngle(new THREE.Vector3(0, 1, 0), (hold === 'left' ? 70 : -70) * dt * Math.PI / 180);
+  camera.position.copy(t).add(off); controls.update();
+}
+
+/* ============ UI ============ */
+function fillEmo(sel){ NAMES.forEach((n) => { const o = document.createElement('option'); o.value = n; o.textContent = n + (EMOTIONS[n].note ? '  — ' + EMOTIONS[n].note : ''); sel.appendChild(o); }); }
+fillEmo($('emo')); fillEmo($('emo2'));
+function syncEmo(){ $('emo').value = EE.emo; $('emo2').value = EE.emo; }
+[$('emo'), $('emo2')].forEach((s) => s.addEventListener('change', () => { EE.emo = s.value; EE.demo = false; $('demo').classList.remove('on'); syncEmo(); }));
+$('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classList.toggle('on', EE.demo); });
+$('side-t').addEventListener('click', function(){ const s = $('side'); s.style.display = s.style.display === 'none' ? 'block' : 'none'; this.classList.toggle('on', s.style.display !== 'none'); });
+[['ar', 'ar'], ['gx', 'gx'], ['gy', 'gy'], ['conv', 'conv'], ['ex', 'ex'], ['ey', 'ey']].forEach(([id, k]) => {
+  $(id).addEventListener('input', function(){ EE[k] = +this.value; if (k === 'gx' || k === 'gy' || k === 'ar') EE.demo = false, $('demo').classList.remove('on'); $('v_' + id).textContent = (+this.value).toFixed(2); });
+});
+$('w_off').addEventListener('click', () => setLamp('off', false));
+$('w_on').addEventListener('click', () => setLamp('on', false));
+$('w_seq').addEventListener('click', () => setLamp('on', true));
+function setLamp(m, seq){ LAMP = m; lampSeq = seq;
+  $('w_off').classList.toggle('on', m === 'off'); $('w_on').classList.toggle('on', m === 'on' && !seq); $('w_seq').classList.toggle('on', m === 'on' && seq); }
+
+// スライダのドラッグ対策（Chrome のポインタキャプチャ不発対策）
+(function(){
+  let drag = null;
+  const dec = (s) => { const t = String(s), i = t.indexOf('.'); return i < 0 ? 0 : t.length - i - 1; };
+  function setFromX(r, x){ const rc = r.getBoundingClientRect(), T = 16;
+    const f = Math.max(0, Math.min(1, (x - rc.left - T / 2) / Math.max(1, rc.width - T)));
+    const mn = +r.min, mx = +r.max, st = +r.step || 0.01;
+    const v = Math.max(mn, Math.min(mx, mn + Math.round(f * (mx - mn) / st) * st)).toFixed(dec(st));
+    if (r.value !== v){ r.value = v; r.dispatchEvent(new Event('input', { bubbles: true })); return true; } return false; }
+  document.querySelectorAll('input[type=range]').forEach((r) => r.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.pointerType === 'touch') return; e.preventDefault(); r.focus(); drag = { r, ch: setFromX(r, e.clientX) }; }));
+  document.addEventListener('pointermove', (e) => { if (!drag) return; if (!(e.buttons & 1)){ drag = null; return; } setFromX(drag.r, e.clientX); }, true);
+  ['pointerup', 'pointercancel'].forEach((n) => document.addEventListener(n, () => { drag = null; }, true));
+})();
+
+/* ============ ループ ============ */
+let last = performance.now();
+(function loop(now){
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  const P = frame(dt);
+  drawTex(P, now); tex.needsUpdate = true;
+  drawUV();
+  holdStep(dt); controls.update(); renderer.render(scene, camera);
+})(last);
+
+/* ============ 起動 ============ */
+function start(){
+  $('pwBox').style.display = 'none';
+  resize3d(); layoutUV(); renderLayerList(); syncEmo(); setLamp('off', false);
+  ['ar', 'gx', 'gy', 'conv', 'ex', 'ey'].forEach((id) => { $('v_' + id).textContent = (+$(id).value).toFixed(2); });
+  loadSample();
+  loadModel(MODEL);
+}
+if (/\.bin$/.test(MODEL) && !sessionStorage.getItem('hes-share-pw')){
+  $('pwForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    sessionStorage.setItem('hes-share-pw', $('pw').value);
+    start();
+  });
+  $('pw').focus();
+} else start();
+</script>
+</body>
+</html>
