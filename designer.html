@@ -367,6 +367,74 @@ async function doExport(){
   setTimeout(() => URL.revokeObjectURL(url), 8000);
   $('msg').textContent = dir + '.zip を書き出しました（' + have.length + ' パーツ）' + (miss.length ? '／未読み込み: ' + miss.map((p) => p.name).join('・') : '');
 }
+/* ---- 配置ツール: テンプレートのガイドに重ねて位置と大きさを合わせる ---- */
+let guideBand = null, guideEye = null;
+loadImage(ASSET + '/g_band.png' + AV).then((im) => { guideBand = im; }).catch(() => {});
+loadImage(ASSET + '/g_eye.png'  + AV).then((im) => { guideEye  = im; }).catch(() => {});
+let placeId = null, placeXf = null, placeDrag = null;
+
+function placeFrame(){
+  const c = $('placeCv'), kind = PARTS[PIDX[placeId]].kind;
+  const ar = kind === 'band' ? CANON.band.w / CANON.band.h : 1;
+  let w = c.width * 0.9, h = w / ar;
+  if (h > c.height * 0.86){ h = c.height * 0.86; w = h * ar; }
+  return { x: (c.width - w) / 2, y: (c.height - h) / 2, w, h };
+}
+function drawPlace(){
+  if (placeId === null) return;
+  const c = $('placeCv'), g = c.getContext('2d'), f = placeFrame();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = '#0d1014'; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#171b21'; g.fillRect(f.x, f.y, f.w, f.h);
+  const im = partImg[placeId];
+  if (im) g.drawImage(im, f.x + placeXf.tx * f.w, f.y + placeXf.ty * f.h, placeXf.sx * f.w, placeXf.sy * f.h);
+  const gd = PARTS[PIDX[placeId]].kind === 'band' ? guideBand : guideEye;
+  if (gd && $('placeGuide').checked) g.drawImage(gd, f.x, f.y, f.w, f.h);
+  g.strokeStyle = 'rgba(77,163,255,.9)'; g.lineWidth = 2; g.strokeRect(f.x + 1, f.y + 1, f.w - 2, f.h - 2);
+}
+function placeResize(){
+  const c = $('placeCv'), r = c.getBoundingClientRect();
+  c.width = Math.max(320, Math.round(r.width)); c.height = Math.max(200, Math.round(r.height));
+  drawPlace();
+}
+function openPlace(id){
+  placeId = id; placeXf = Object.assign({ tx: 0, ty: 0, sx: 1, sy: 1 }, partXf[id]);
+  const p = PARTS[PIDX[id]];
+  $('placeTitle').textContent = p.name + '　の配置（' + (p.kind === 'band' ? '帯 7546×1525' : '目玉 1200×1200') + ' の枠）';
+  $('place').style.display = 'flex';
+  requestAnimationFrame(placeResize);
+}
+function closePlace(){ $('place').style.display = 'none'; placeId = null; placeDrag = null; }
+function zoomAt(k, cx, cy, onlyY){
+  if (placeId === null) return;
+  if (!onlyY){ placeXf.tx = cx - (cx - placeXf.tx) * k; placeXf.sx *= k; }
+  placeXf.ty = cy - (cy - placeXf.ty) * k; placeXf.sy *= k;
+  drawPlace();
+}
+$('placeCv').addEventListener('pointerdown', (e) => { placeDrag = { x: e.clientX, y: e.clientY }; try { $('placeCv').setPointerCapture(e.pointerId); } catch(_){} });
+$('placeCv').addEventListener('pointermove', (e) => {
+  if (!placeDrag) return;
+  const f = placeFrame(), r = $('placeCv').getBoundingClientRect(), k = $('placeCv').width / r.width;
+  placeXf.tx += (e.clientX - placeDrag.x) * k / f.w;
+  placeXf.ty += (e.clientY - placeDrag.y) * k / f.h;
+  placeDrag = { x: e.clientX, y: e.clientY }; drawPlace();
+});
+['pointerup', 'pointercancel'].forEach((n) => $('placeCv').addEventListener(n, () => { placeDrag = null; }));
+$('placeCv').addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const f = placeFrame(), r = $('placeCv').getBoundingClientRect(), k = $('placeCv').width / r.width;
+  const cx = ((e.clientX - r.left) * k - f.x) / f.w, cy = ((e.clientY - r.top) * k - f.y) / f.h;
+  zoomAt(Math.exp(-e.deltaY * 0.0015), cx, cy, e.shiftKey);
+}, { passive: false });
+$('placeIn').addEventListener('click', () => zoomAt(1.08, 0.5, 0.5, false));
+$('placeOut').addEventListener('click', () => zoomAt(1 / 1.08, 0.5, 0.5, false));
+$('placeFit').addEventListener('click', () => { const a = AUTOFIT; AUTOFIT = true; placeXf = autoXf(placeId); AUTOFIT = a; drawPlace(); });
+$('placeReset').addEventListener('click', () => { placeXf = { tx: 0, ty: 0, sx: 1, sy: 1 }; drawPlace(); });
+$('placeGuide').addEventListener('change', drawPlace);
+$('placeCancel').addEventListener('click', closePlace);
+$('placeOk').addEventListener('click', () => { partXf[placeId] = placeXf; closePlace(); });
+window.addEventListener('resize', () => { if (placeId !== null) placeResize(); });
+
 $('export').addEventListener('click', doExport);
 $('autofit').addEventListener('change', function(){ AUTOFIT = this.checked; });
 
