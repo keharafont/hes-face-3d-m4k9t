@@ -46,7 +46,7 @@
 <body>
 <div id="app">
   <header>
-    <b>EYE VIEWER</b><small>片目（右）・3D ＋ UV 展開</small>
+    <b>EYE VIEWER</b><small>片目（右）・LED パネル 3D ＋ UV 展開</small>
     <button id="pick">データを読み込む</button>
     <button id="useSample" class="on">サンプルに戻す</button>
     <input type="file" id="file" accept=".psd,.png,image/png" multiple style="display:none">
@@ -57,13 +57,13 @@
   </header>
   <div id="main">
     <div class="pane">
-      <div class="ptitle">3D（ヘッドライト）</div>
+      <div class="ptitle">3D（ヘッドライトに貼る LED パネル）</div>
       <div id="view3d"></div>
-      <div id="prog">読み込み中…</div>
+      <div id="prog">パネルを読み込み中…</div>
       <div class="bar">
-        <button data-c="eyes">目に寄る</button><button data-c="front">正面</button><button data-c="fit">全体</button>
+        <button data-c="front">正面</button><button data-c="angle">斜め</button><button data-c="side">横から</button>
         <button data-c="in">拡大 ＋</button><button data-c="out">縮小 −</button>
-        <button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button>
+        <button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button><button data-c="up">▲ 上から</button><button data-c="down">▼ 下から</button>
         <button data-c="rot">自動回転</button><button data-c="bright">明るさ</button>
       </div>
     </div>
@@ -98,7 +98,6 @@
 </aside>
 
 <div id="drop">ここに PSD／PNG をドロップ</div>
-<div id="pwBox"><form id="pwForm"><div style="letter-spacing:.14em;font-size:12px">EYE VIEWER</div><input id="pw" type="password" placeholder="パスワード" autocomplete="current-password"><button type="submit">開く</button><div id="pwMsg" style="font-size:11px;color:#e08080;min-height:16px;margin-top:6px"></div></form></div>
 
 <script src="ag-psd.js"></script>
 <script type="importmap">
@@ -113,7 +112,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
-const MODEL = 'yaris.bin';                 // 3D モデル（.bin なら要パスワード）
+const MODEL = 'eye_panel.glb';                 // 3D モデル（.bin なら要パスワード）
 
 /* ============ UV の基準（テンプレートと同じ） ============ */
 const TEX = 2048;                                  // 合成テクスチャの大きさ
@@ -333,7 +332,7 @@ function drawUV(){
   if ($('uvGuide').checked && guideImg) uvCtx.drawImage(guideImg, 0, 0, TEX, TEX);
 }
 
-/* ============ 3D ============ */
+/* ============ 3D（ヘッドライトに貼る LED パネルだけ） ============ */
 const view = $('view3d');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(1.5, devicePixelRatio));
@@ -342,72 +341,69 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure
 view.appendChild(renderer.domElement);
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15181d);
 const pmrem = new THREE.PMREMGenerator(renderer); scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1000); camera.position.set(4, 2, 5);
-const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true;
+const camera = new THREE.PerspectiveCamera(38, 1, 0.005, 100); camera.position.set(1, 0.2, 0);
+const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.autoRotateSpeed = 1.1;
 function resize3d(){ const w = view.clientWidth, h = view.clientHeight; if (!w || !h) return; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 
 const tex = new THREE.CanvasTexture(texCv); tex.flipY = false; tex.colorSpace = THREE.SRGBColorSpace;
-let model = null, eyeR = null, expo = 1.0;
+let panel = null, expo = 1.0;
+const PC = new THREE.Vector3();      // パネルの中心
+const PN = new THREE.Vector3(1, 0, 0);   // パネルの表向き
+let PR = 0.3;                        // パネルの大きさ
 
-async function loadModel(name){
+function loadModel(name){
   const loader = new GLTFLoader();
-  const dr = new DRACOLoader(); dr.setDecoderPath('./'); loader.setDRACOLoader(dr);
-  const onOk = (gltf) => {
-    model = gltf.scene; scene.add(model);
-    model.traverse((o) => { if (o.isMesh){ if (/^平面/.test(o.name) || (o.material && /Fabric/i.test(o.material.name || ''))) o.visible = false;
-      if (o.name === '右目'){ eyeR = o; o.material = o.material.clone(); o.material.map = tex; o.material.emissiveMap = tex; o.material.emissive = new THREE.Color(0xffffff); o.material.emissiveIntensity = 0.8; o.material.needsUpdate = true; }
-      if (o.name === '左目') o.visible = false;   // 片目だけ
-    } });
+  loader.load(name, (gltf) => {
+    let mesh = null;
+    gltf.scene.traverse((o) => { if (o.isMesh && !mesh) mesh = o; });
+    if (!mesh){ $('prog').textContent = 'パネルのメッシュが見つかりません'; return; }
+    panel = mesh; scene.add(gltf.scene);
+    const mt = new THREE.MeshStandardMaterial({ map: tex, emissiveMap: tex, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.85, roughness: 0.5, metalness: 0.0, side: THREE.DoubleSide });
+    mesh.material = mt;
+    // 中心・向き・大きさ（面の平均法線をカメラの正面とする）
+    mesh.updateWorldMatrix(true, false);
+    const g = mesh.geometry; g.computeBoundingBox(); g.computeBoundingSphere();
+    const bb = g.boundingBox.clone().applyMatrix4(mesh.matrixWorld);
+    bb.getCenter(PC); PR = bb.getSize(new THREE.Vector3()).length() * 0.5;
+    const nrm = g.getAttribute('normal');
+    if (nrm){
+      const acc = new THREE.Vector3(), v = new THREE.Vector3();
+      const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+      for (let i = 0; i < nrm.count; i++){ v.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize(); acc.add(v); }
+      if (acc.lengthSq() > 1e-6) PN.copy(acc.normalize());
+    }
     $('prog').style.display = 'none';
-    zoomEye();
-  };
-  const onErr = (e) => { $('prog').textContent = '3D を読み込めませんでした: ' + (e && e.message || e); };
-  if (!/\.bin$/.test(name)){ loader.load(name, onOk, onProg, onErr); return; }
-  try {
-    const pw = sessionStorage.getItem('hes-share-pw'); if (!pw) throw new Error('パスワードが必要です');
-    const res = await fetch(name); if (!res.ok) throw new Error('モデルを取得できません');
-    const total = +res.headers.get('content-length') || 0;
-    const rd = res.body.getReader(); const chunks = []; let got = 0;
-    while (true){ const { done, value } = await rd.read(); if (done) break; chunks.push(value); got += value.length; onProg({ loaded: got, total }); }
-    const buf = new Uint8Array(got); let o = 0; for (const c of chunks){ buf.set(c, o); o += c.length; }
-    const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
-    const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: buf.slice(0, 16), iterations: 300000, hash: 'SHA-256' }, km, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(16, 28) }, key, buf.slice(28));
-    loader.parse(pt, './', onOk, onErr);
-  } catch (e){ onErr(e); }
+    faceFront();
+  }, (ev) => { if (ev.total) $('prog').textContent = 'パネルを読み込み中… ' + Math.round(ev.loaded / ev.total * 100) + '%'; },
+     (e) => { $('prog').textContent = '読み込めませんでした: ' + (e && e.message || e); });
 }
-function onProg(ev){ if (ev.total) $('prog').textContent = '3D 読み込み中… ' + Math.round(ev.loaded / ev.total * 100) + '%'; }
 
-function meshCenter(m){ m.updateWorldMatrix(true, false); m.geometry.computeBoundingBox(); return m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld).getCenter(new THREE.Vector3()); }
-function visibleBox(obj){ const b = new THREE.Box3(); obj.updateWorldMatrix(true, true); obj.traverse((o) => { if (o.isMesh && o.visible){ o.geometry.computeBoundingBox(); b.union(o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld)); } }); return b; }
-function frontDir(){ if (!eyeR || !model) return new THREE.Vector3(0, 0, 1);
-  const p = meshCenter(eyeR), c = visibleBox(model).getCenter(new THREE.Vector3());
-  const d = new THREE.Vector3(p.x - c.x, 0, 0); return (d.x >= 0 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(-1, 0, 0)); }
-function zoomEye(){ if (!eyeR) return; const p = meshCenter(eyeR); controls.target.copy(p);
-  camera.position.copy(p).add(frontDir().multiplyScalar(0.85)).add(new THREE.Vector3(0, 0.10, 0)); controls.update(); }
-function fitAll(){ if (!model) return; const b = visibleBox(model), c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
-  controls.target.copy(c); camera.position.copy(c).add(new THREE.Vector3(s.x * 0.9, s.y * 0.7, s.z * 1.1)); controls.update(); }
-function faceFront(){ if (!model) return; const b = visibleBox(model), c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
-  controls.target.copy(c); camera.position.copy(c).add(frontDir().multiplyScalar(Math.max(s.x, s.z) * 1.4)).add(new THREE.Vector3(0, s.y * 0.15, 0)); controls.update(); }
+function place(dir, dist){ controls.target.copy(PC); camera.position.copy(PC).add(dir.clone().normalize().multiplyScalar(dist)); controls.update(); }
+function faceFront(){ place(PN, PR * 2.3); }                                                   // 正面
+function faceAngle(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -0.6); d.y += 0.25; place(d, PR * 2.3); }   // 斜め
+function faceSide(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -1.25); place(d, PR * 2.1); }                // 横から
+function zoomIn(){ place(camera.position.clone().sub(controls.target), camera.position.distanceTo(controls.target) * 0.75); }
 
 let hold = null, holdUntil = 0;
 document.querySelectorAll('.bar button[data-c]').forEach((b) => {
   const c = b.dataset.c;
-  if (['in', 'out', 'left', 'right'].includes(c)){
+  if (['in', 'out', 'left', 'right', 'up', 'down'].includes(c)){
     b.addEventListener('pointerdown', (e) => { e.preventDefault(); hold = c; holdUntil = performance.now() + 160; });
     ['pointerup', 'pointerleave', 'pointercancel'].forEach((n) => b.addEventListener(n, () => { const w = holdUntil - performance.now(); if (w > 0) setTimeout(() => { hold = null; }, w); else hold = null; }));
   } else b.addEventListener('click', () => {
-    if (c === 'eyes') zoomEye(); else if (c === 'front') faceFront(); else if (c === 'fit') fitAll();
+    if (!panel) return;
+    if (c === 'front') faceFront(); else if (c === 'angle') faceAngle(); else if (c === 'side') faceSide();
     else if (c === 'rot'){ controls.autoRotate = !controls.autoRotate; b.classList.toggle('on', controls.autoRotate); }
     else if (c === 'bright'){ expo = expo >= 1.6 ? 0.6 : expo + 0.3; renderer.toneMappingExposure = expo; }
   });
 });
 function holdStep(dt){
-  if (!hold || !model) return;
+  if (!hold || !panel) return;
   const t = controls.target, off = camera.position.clone().sub(t);
   if (hold === 'in') off.multiplyScalar(Math.exp(-1.1 * dt));
   else if (hold === 'out') off.multiplyScalar(Math.exp(1.1 * dt));
-  else off.applyAxisAngle(new THREE.Vector3(0, 1, 0), (hold === 'left' ? 70 : -70) * dt * Math.PI / 180);
+  else if (hold === 'left' || hold === 'right') off.applyAxisAngle(new THREE.Vector3(0, 1, 0), (hold === 'left' ? 70 : -70) * dt * Math.PI / 180);
+  else { const ax = new THREE.Vector3().crossVectors(off, new THREE.Vector3(0, 1, 0)).normalize(); off.applyAxisAngle(ax, (hold === 'up' ? -45 : 45) * dt * Math.PI / 180); }
   camera.position.copy(t).add(off); controls.update();
 }
 
@@ -455,20 +451,12 @@ let last = performance.now();
 
 /* ============ 起動 ============ */
 function start(){
-  $('pwBox').style.display = 'none';
   resize3d(); layoutUV(); renderLayerList(); syncEmo(); setLamp('off', false);
   ['ar', 'gx', 'gy', 'conv', 'ex', 'ey'].forEach((id) => { $('v_' + id).textContent = (+$(id).value).toFixed(2); });
   loadSample();
   loadModel(MODEL);
 }
-if (/\.bin$/.test(MODEL) && !sessionStorage.getItem('hes-share-pw')){
-  $('pwForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    sessionStorage.setItem('hes-share-pw', $('pw').value);
-    start();
-  });
-  $('pw').focus();
-} else start();
+start();
 </script>
 </body>
 </html>
