@@ -26,6 +26,13 @@
   .bar{ display:flex; gap:6px; padding:7px 10px; border-top:1px solid var(--line); background:#12151a; flex-wrap:wrap; align-items:center }
   .bar label{ font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px }
   #side{ position:absolute; right:0; top:0; bottom:0; width:260px; background:rgba(18,21,26,.96); border-left:1px solid var(--line); padding:12px; overflow:auto; z-index:4 }
+  #place{ position:fixed; inset:0; background:rgba(8,10,13,.86); z-index:10; display:none; align-items:center; justify-content:center }
+  #place .box{ width:min(1000px,94vw); background:#1b1f26; border:1px solid var(--line); border-radius:10px; padding:14px }
+  #place .hd{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px }
+  #place .hd label{ font-size:11px; color:var(--dim); display:flex; gap:5px; align-items:center }
+  #placeCv{ width:100%; height:min(56vh,460px); display:block; background:#0d1014; border:1px solid var(--line); border-radius:6px; touch-action:none; cursor:grab }
+  #place .hint{ font-size:11px; color:var(--dim); margin:8px 0 10px }
+  #place .row{ display:flex; gap:8px; align-items:center }
   #dlg{ position:fixed; inset:0; background:rgba(8,10,13,.72); z-index:9; display:none; align-items:center; justify-content:center }
   #dlg .box{ width:360px; background:#1b1f26; border:1px solid var(--line); border-radius:10px; padding:16px; box-shadow:0 18px 60px #000a }
   #dlg .box > b{ display:block; font-size:13px; margin-bottom:12px }
@@ -101,6 +108,23 @@
   </div>
 </div>
 
+<div id="place">
+  <div class="box">
+    <div class="hd"><b id="placeTitle">配置</b><label><input type="checkbox" id="placeGuide" checked> ガイド</label></div>
+    <canvas id="placeCv"></canvas>
+    <div class="hint">ドラッグで移動／ホイールで拡大縮小／Shift＋ホイールで縦だけ</div>
+    <div class="row">
+      <button id="placeFit">枠に合わせる</button>
+      <button id="placeReset">リセット</button>
+      <button id="placeOut">縮小 −</button>
+      <button id="placeIn">拡大 ＋</button>
+      <span style="flex:1"></span>
+      <button id="placeCancel">やめる</button>
+      <button id="placeOk" class="on">決定</button>
+    </div>
+  </div>
+</div>
+
 <aside id="side" style="display:none">
   <div id="side-head"><b>設定</b><button id="side-x">閉じる ✕</button></div>
   <h3>表情（EE の出力）— グリーティング</h3>
@@ -136,7 +160,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
 const MODEL = 'eye_panels.glb' + '?v=4';
-const AV = '?v=6';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const AV = '?v=5';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ レンズの形（本番レンダラーと同じ輪郭データ） ============ */
 const TEX  = 2048;                                 // 合成テクスチャの大きさ
@@ -193,11 +217,20 @@ function renderLayerList(){
     const own = partSrc[p.id];
     t.textContent = p.name + (own ? '  ← ' + own.name : (partImg[p.id] ? '（サンプル）' : '（なし）'));
     t.style.color = own ? '#9fd0ff' : (partImg[p.id] ? '#cfd6de' : '#6b7480');
-    d.appendChild(c); d.appendChild(t); $('layers').appendChild(d);
+    d.appendChild(c); d.appendChild(t);
+    if (partImg[p.id]){
+      const bt = document.createElement('button');
+      bt.textContent = '配置'; bt.style.cssText = 'margin-left:auto;padding:1px 7px;font-size:10px';
+      bt.addEventListener('click', () => openPlace(p.id));
+      d.style.display = 'flex'; d.style.alignItems = 'center'; d.appendChild(bt);
+    }
+    $('layers').appendChild(d);
   });
 }
 
+const CANON = { band: { w: 7546, h: 1525 }, eye: { w: 1200, h: 1200 } };
 const partMeta = {};      // id -> {W,H,bx,by,bw,bh,op}
+const partXf   = {};      // id -> {tx,ty,sx,sy}  正規化枠（0..1）のどこに絵を置くか
 function measure(im){
   const W = im.naturalWidth || im.width, H = im.naturalHeight || im.height;
   const k = Math.min(1, 512 / Math.max(W, H));
@@ -214,7 +247,26 @@ function measure(im){
   if (x1 < 0) return { W, H, bx: 0, by: 0, bw: W, bh: H, op: 0 };
   return { W, H, bx: x0 / k, by: y0 / k, bw: (x1 - x0 + 1) / k, bh: (y1 - y0 + 1) / k, op: op / (c.width * c.height) };
 }
-function setPart(id, im, file){ partImg[id] = im; partMeta[id] = measure(im); if (file) partSrc[id] = file; else delete partSrc[id]; }
+function setPart(id, im, file){
+  partImg[id] = im; partMeta[id] = measure(im);
+  if (file) partSrc[id] = file; else delete partSrc[id];
+  partXf[id] = autoXf(id);
+}
+// 読み込んだ絵を枠に合わせる初期値。枠どおりの比率ならそのまま、違えば中身を枠いっぱいに
+function autoXf(id){
+  const m = partMeta[id], kind = PARTS[PIDX[id]].kind;
+  if (!m) return { tx: 0, ty: 0, sx: 1, sy: 1 };
+  const exp = kind === 'band' ? CANON.band.w / CANON.band.h : 1;
+  const tol = kind === 'band' ? 0.02 : 0.02;
+  if (!AUTOFIT || Math.abs(m.W / m.H - exp) < exp * tol) return { tx: 0, ty: 0, sx: 1, sy: 1 };
+  if (kind === 'band'){
+    const sx = m.W / m.bw, sy = m.H / m.bh;
+    return { tx: -m.bx / m.bw, ty: -m.by / m.bh, sx, sy };
+  }
+  const d = Math.max(m.bw, m.bh);                 // 描かれた中身の外径を枠の一辺に合わせる
+  const sx = m.W / d, sy = m.H / d;
+  return { tx: 0.5 - (m.bx + m.bw / 2) / d, ty: 0.5 - (m.by + m.bh / 2) / d, sx, sy };
+}
 
 function loadImage(src){
   return new Promise((ok, ng) => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => ok(im); im.onerror = ng; im.src = src; });
@@ -250,7 +302,7 @@ async function applyDlg(){
     $('msg').style.color = warn ? '#e8c07a' : '';
     $('msg').textContent = p.name + ' ← ' + pendingFile.name + '（' + m.W + '×' + m.H + '）' + warn;
     $('useSample').classList.remove('on');
-    renderLayerList(); closeDlg();
+    renderLayerList(); closeDlg(); openPlace(id);
   } catch (e){ $('dlgMsg').textContent = '読み込めませんでした（PNG を選んでください）'; }
 }
 $('pick').addEventListener('click', () => openDlg(null));
@@ -286,25 +338,34 @@ function zipStore(files){                 // [{name, data:Uint8Array}] → Blob�
   return new Blob([...parts, ...dir, end], { type: 'application/zip' });
 }
 async function doExport(){
-  const miss = PARTS.filter((p) => !partSrc[p.id]);
-  if (miss.length === PARTS.length){ $('msg').style.color = '#e08080'; $('msg').textContent = '書き出すデータがありません（読み込んでから押してください）'; return; }
+  const have = PARTS.filter((p) => partSrc[p.id]);
+  if (!have.length){ $('msg').style.color = '#e08080'; $('msg').textContent = '書き出すデータがありません（読み込んでから押してください）'; return; }
   const d = new Date(), pad = (v) => String(v).padStart(2, '0');
   const dir = 'HES_eye_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
   const files = [], list = [];
+  $('msg').style.color = ''; $('msg').textContent = '書き出しています…';
   for (let i = 0; i < PARTS.length; i++){
     const p = PARTS[i], f = partSrc[p.id];
     if (!f) continue;
-    files.push({ name: dir + '/' + pad(i + 1) + '_' + p.id + '.png', data: new Uint8Array(await f.arrayBuffer()) });
-    list.push({ file: pad(i + 1) + '_' + p.id + '.png', part: p.id, name: p.name, kind: p.kind, original: f.name });
+    // 配置を反映して、決められたサイズに描き直す
+    const cn = CANON[p.kind], x = partXf[p.id] || { tx: 0, ty: 0, sx: 1, sy: 1 };
+    const cv = document.createElement('canvas'); cv.width = cn.w; cv.height = cn.h;
+    const g = cv.getContext('2d');
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(partImg[p.id], x.tx * cn.w, x.ty * cn.h, x.sx * cn.w, x.sy * cn.h);
+    const blob = await new Promise((ok) => cv.toBlob(ok, 'image/png'));
+    const name = pad(i + 1) + '_' + p.id + '.png';
+    files.push({ name: dir + '/' + name, data: new Uint8Array(await blob.arrayBuffer()) });
+    files.push({ name: dir + '/original/' + name.replace('.png', '') + '_' + f.name, data: new Uint8Array(await f.arrayBuffer()) });
+    list.push({ file: name, part: p.id, name: p.name, kind: p.kind, size: [cn.w, cn.h], original: f.name, placement: x });
   }
-  const meta = { generated: d.toISOString(), band: { w: 7546, h: 1525 }, eye: { w: 1200, h: 1200 }, parts: list,
-                 missing: miss.map((p) => p.name) };
+  const miss = PARTS.filter((p) => !partSrc[p.id]);
+  const meta = { generated: d.toISOString(), canvas: CANON, parts: list, missing: miss.map((p) => p.name) };
   files.push({ name: dir + '/manifest.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 2)) });
   const url = URL.createObjectURL(zipStore(files));
   const a = document.createElement('a'); a.href = url; a.download = dir + '.zip'; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
-  $('msg').style.color = '';
-  $('msg').textContent = dir + '.zip を書き出しました' + (miss.length ? '（未読み込み: ' + miss.map((p) => p.name).join('・') + '）' : '');
+  setTimeout(() => URL.revokeObjectURL(url), 8000);
+  $('msg').textContent = dir + '.zip を書き出しました（' + have.length + ' パーツ）' + (miss.length ? '／未読み込み: ' + miss.map((p) => p.name).join('・') : '');
 }
 $('export').addEventListener('click', doExport);
 $('autofit').addEventListener('change', function(){ AUTOFIT = this.checked; });
@@ -347,20 +408,10 @@ const BX = () => BAND.u0 * TEX, BY = () => BAND.v0 * TEX;
 const BW = () => (BAND.u1 - BAND.u0) * TEX, BH = () => BANDH * TEX;
 const uNorm = (u) => (u - (BAND.u0 + BAND.u1) / 2) / ((BAND.u1 - BAND.u0) / 2);
 
-// 帯タイプの貼り方。基準は「リフレクター」のキャンバス。
-// 帯の比率どおりに描かれていれば枠のまま、そうでなければ描かれた中身をレンズに合わせる
-function bandXf(){
-  const r = partMeta.reflector; if (!r) return null;
-  const exp = 7546 / 1525;
-  if (!AUTOFIT || Math.abs(r.W / r.H - exp) < exp * 0.02) return { sx: BW() / r.W, sy: BH() / r.H, ox: BX(), oy: BY(), W: r.W, H: r.H };
-  const sx = BW() / r.bw, sy = BH() / r.bh;
-  return { sx, sy, ox: BX() - r.bx * sx, oy: BY() - r.by * sy, W: r.W, H: r.H };
-}
-function drawBand(id){
+function drawBand(id){                       // 帯タイプ: レンズの外接矩形に、配置の変換で貼る
   const im = partImg[id]; if (!im || !partOn[id]) return;
-  const x = bandXf();
-  if (!x) { tg.drawImage(im, BX(), BY(), BW(), BH()); return; }
-  tg.drawImage(im, x.ox, x.oy, x.W * x.sx, x.H * x.sy);
+  const x = partXf[id] || { tx: 0, ty: 0, sx: 1, sy: 1 };
+  tg.drawImage(im, BX() + x.tx * BW(), BY() + x.ty * BH(), x.sx * BW(), x.sy * BH());
 }
 function clipEdge(fn, above){               // 縁の曲線で切り取る（上側／下側）
   tg.save(); tg.beginPath();
@@ -391,20 +442,12 @@ function drawTex(P, now){
   const eg = edgeAt(uc);
   const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE.y;
   const D  = (eg.b - eg.t) * TEX * EYESIZE;
-  // 目玉タイプの貼り方。基準は「赤目玉」のキャンバス。正方形ならその枠＝外径、
-  // そうでなければ描かれた中身の外接矩形＝外径とみなす。黒目とハイライトは同じ変換を使う
-  function eyeXf(){
-    const r = partMeta.iris; if (!r) return null;
-    const sq = !AUTOFIT || Math.abs(r.W / r.H - 1) < 0.02;
-    const unit = sq ? Math.max(r.W, r.H) : Math.max(r.bw, r.bh);
-    return { s: D / unit, cx: sq ? r.W / 2 : r.bx + r.bw / 2, cy: sq ? r.H / 2 : r.by + r.bh / 2, W: r.W, H: r.H };
-  }
+  // 目玉タイプ: 一辺 D の正方形の枠に、配置の変換で貼る。拡縮は枠の中心まわり
   function drawEye(id, sc, px, py){
     const im = partImg[id]; if (!im || !partOn[id]) return;
-    const x = eyeXf();
-    if (!x){ const w = D * sc * P.eyeScale.x, h = D * sc * P.eyeScale.y; tg.drawImage(im, px * TEX - w / 2, py * TEX - h / 2, w, h); return; }
-    const kx = x.s * sc * P.eyeScale.x, ky = x.s * sc * P.eyeScale.y;
-    tg.drawImage(im, px * TEX - x.cx * kx, py * TEX - x.cy * ky, x.W * kx, x.H * ky);
+    const x = partXf[id] || { tx: 0, ty: 0, sx: 1, sy: 1 };
+    const kx = D * sc * P.eyeScale.x, ky = D * sc * P.eyeScale.y;
+    tg.drawImage(im, px * TEX + (x.tx - 0.5) * kx, py * TEX + (x.ty - 0.5) * ky, x.sx * kx, x.sy * ky);
   }
   drawEye('iris',  0.80 + 0.30 * P.iris.dia,  uc, vc);
   drawEye('pupil', 0.55 + 0.85 * P.pupil.dia, uc, vc);
