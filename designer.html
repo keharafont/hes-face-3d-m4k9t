@@ -15,7 +15,8 @@
   header b{ letter-spacing:.14em; font-size:13px } header small{ color:var(--dim) }
   button, select{ font:12px -apple-system,"Hiragino Sans",sans-serif; padding:5px 11px; border:1px solid #3a4048; border-radius:5px; background:#232830; color:var(--ink); cursor:pointer }
   button:hover{ background:#2e343d } button.on{ background:var(--acc); border-color:var(--acc); color:#08121e }
-  #main{ display:grid; grid-template-columns:1fr 1fr; min-height:0 }
+  #main{ display:grid; grid-template-columns:1fr 1fr; min-height:0; transition:margin-right .15s }
+  #main.side{ margin-right:260px }
   .pane{ position:relative; min-width:0; min-height:0; border-right:1px solid var(--line); display:flex; flex-direction:column }
   .pane:last-child{ border-right:0 }
   .ptitle{ position:absolute; left:12px; top:10px; z-index:3; font-size:11px; letter-spacing:.12em; color:var(--dim); pointer-events:none; text-shadow:0 1px 3px #000 }
@@ -30,7 +31,7 @@
   .row{ display:grid; grid-template-columns:76px 1fr 40px; gap:6px; align-items:center; margin:5px 0 }
   .row span{ font-size:11px; color:var(--dim) } .row .v{ text-align:right; font:11px ui-monospace,Menlo,monospace }
   input[type=range]{ width:100%; accent-color:var(--acc) }
-  #emo{ width:100% }
+  #emo{ width:100% } header #emo{ width:auto; max-width:340px; flex:0 1 340px }
   #layers{ font-size:11px } #layers div{ display:flex; align-items:center; gap:6px; padding:2px 0; color:var(--dim) }
   #layers input{ accent-color:var(--acc) }
   #drop{ position:fixed; inset:0; background:rgba(10,14,20,.88); z-index:20; display:none; align-items:center; justify-content:center; font-size:18px; border:3px dashed var(--acc) }
@@ -416,7 +417,7 @@ fillEmo($('emo')); fillEmo($('emo2'));
 function syncEmo(){ $('emo').value = EE.emo; $('emo2').value = EE.emo; }
 [$('emo'), $('emo2')].forEach((s) => s.addEventListener('change', () => { EE.emo = s.value; EE.demo = false; $('demo').classList.remove('on'); syncEmo(); }));
 $('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classList.toggle('on', EE.demo); });
-$('side-t').addEventListener('click', function(){ const s = $('side'); s.style.display = s.style.display === 'none' ? 'block' : 'none'; this.classList.toggle('on', s.style.display !== 'none'); });
+$('side-t').addEventListener('click', function(){ const s = $('side'); const open = s.style.display === 'none'; s.style.display = open ? 'block' : 'none'; this.classList.toggle('on', open); $('main').classList.toggle('side', open); setTimeout(() => { layoutUV(); resize3d(); }, 180); });
 [['ar', 'ar'], ['gx', 'gx'], ['gy', 'gy'], ['conv', 'conv'], ['ex', 'ex'], ['ey', 'ey']].forEach(([id, k]) => {
   $(id).addEventListener('input', function(){ EE[k] = +this.value; if (k === 'gx' || k === 'gy' || k === 'ar') EE.demo = false, $('demo').classList.remove('on'); $('v_' + id).textContent = (+this.value).toFixed(2); });
 });
