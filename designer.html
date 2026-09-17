@@ -112,7 +112,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
-const MODEL = 'eye_panel.glb';                 // 3D モデル（.bin なら要パスワード）
+const MODEL = 'eye_panel.glb' + '?v=2';        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ UV の基準（テンプレートと同じ） ============ */
 const TEX = 2048;                                  // 合成テクスチャの大きさ
