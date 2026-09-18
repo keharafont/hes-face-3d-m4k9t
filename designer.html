@@ -135,6 +135,7 @@
   <div class="row"><span>横比率</span><input type="range" id="ex" min="0.5" max="2" step="0.01" value="1"><span class="v" id="v_ex"></span></div>
   <div class="row"><span>縦比率</span><input type="range" id="ey" min="0.5" max="2" step="0.01" value="1"><span class="v" id="v_ey"></span></div>
   <div class="row"><span>目玉の大きさ</span><input type="range" id="esize" min="0.5" max="1.4" step="0.01" value="0.94"><span class="v" id="v_esize"></span></div>
+  <div class="row"><span>ハイライト追従</span><input type="range" id="hlf" min="0" max="1" step="0.01" value="1"><span class="v" id="v_hlf"></span></div>
   <h3>ウィンカー</h3>
   <div style="display:flex;gap:6px"><button id="w_off" class="on">消灯</button><button id="w_on">点滅</button><button id="w_seq">シーケンシャル</button></div>
   <h3>レイヤー</h3>
@@ -160,7 +161,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
 const MODEL = 'eye_panels.glb' + '?v=4';
-const AV = '?v=8';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const AV = '?v=9';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ レンズの形（本番レンダラーと同じ輪郭データ） ============ */
 const TEX  = 2048;                                 // 合成テクスチャの大きさ
@@ -168,9 +169,8 @@ const EDGE = {"u0":0.082835,"u1":1.00402,"v0":0.4184,"v1":0.604523,"n":192,"top"
 const BAND = { u0: EDGE.u0, u1: EDGE.u1, v0: EDGE.v0, v1: EDGE.v1 };
 const BANDH  = BAND.v1 - BAND.v0;
 const IRIS_U = 0.3999;                             // 目玉の基準位置（u）
-// 視線 ±1 で目玉が動く量。本番レンダラー（eye-player）と同じ「目玉の半径に対する割合」。
-//   横: 0.36w ÷ 半径 0.52w = 0.692   縦: 0.28h ÷ 半径 0.68h = 0.412
-const GAZE_K = { x: 0.36 / 0.52, y: 0.28 / 0.68 };
+const GAZE = { x: 0.14478, y: 0.06445 };           // 視線 ±1 の移動量（UV）＝可動域いっぱい
+let HLFOLLOW = 1.0;                                // ハイライトが視線に付いていく割合
 let   EYESIZE = 0.94;                              // 目玉の直径 ÷ その場所のレンズの高さ
 const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 
@@ -510,10 +510,9 @@ function drawTex(P, now){
 
   // ---- 目玉: 視線で動かし、その場所のレンズの高さに収める ----
   const e0 = edgeAt(IRIS_U);
-  const R  = (e0.b - e0.t) * EYESIZE / 2;                 // 目玉の半径（UV）
-  const uc = IRIS_U + (P.gaze.x - P.gaze.conv) * GAZE_K.x * R;
+  const uc = IRIS_U + P.gaze.x * GAZE.x - P.gaze.conv * GAZE.x * 0.5;
   const eg = edgeAt(uc);
-  const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE_K.y * R;
+  const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE.y;
   const D  = (eg.b - eg.t) * TEX * EYESIZE;
   // 目玉タイプ: 一辺 D の正方形の枠に、配置の変換で貼る。拡縮は枠の中心まわり
   function drawEye(id, sc, px, py){
@@ -524,10 +523,9 @@ function drawTex(P, now){
   }
   drawEye('iris',  0.80 + 0.30 * P.iris.dia,  uc, vc);
   drawEye('pupil', 0.55 + 0.85 * P.pupil.dia, uc, vc);
-  // ハイライトは光源側。視線には 25% だけ付いていく（動かないから球に見える）。
-  // 本番レンダラーと同じ割合。目玉の動く量自体が半径に対して小さいので、瞳から外れない
+  // ハイライト: 既定は目玉と一緒に動く（100%）。下げると光源に取り残されて球らしく見える
   const vb = (e0.t + e0.b) / 2;
-  drawEye('highlight', 1, IRIS_U + (uc - IRIS_U) * 0.25, vb + (vc - vb) * 0.25);
+  drawEye('highlight', 1, IRIS_U + (uc - IRIS_U) * HLFOLLOW, vb + (vc - vb) * HLFOLLOW);
 
   // ---- まぶた: 本番レンダラーと同じ式で縁を動かす ----
   // 閉じきりの絵を、縁の曲線で切り取って見せる。上まぶたは closure、下まぶたは lowRaise。
@@ -729,6 +727,7 @@ window.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSide(fals
   $(id).addEventListener('input', function(){ EE[k] = +this.value; if (k === 'gx' || k === 'gy' || k === 'ar') EE.demo = false, $('demo').classList.remove('on'); $('v_' + id).textContent = (+this.value).toFixed(2); });
 });
 $('esize').addEventListener('input', function(){ EYESIZE = +this.value; $('v_esize').textContent = EYESIZE.toFixed(2); });
+$('hlf').addEventListener('input', function(){ HLFOLLOW = +this.value; $('v_hlf').textContent = HLFOLLOW.toFixed(2); });
 PARTS.forEach((p) => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; $('dlgPart').appendChild(o); });
 $('w_off').addEventListener('click', () => setLamp('off', false));
 $('w_on').addEventListener('click', () => setLamp('on', false));
@@ -765,7 +764,7 @@ let last = performance.now();
 /* ============ 起動 ============ */
 function start(){
   resize3d(); layoutUV(); renderLayerList(); syncEmo(); setLamp('off', false);
-  ['ar', 'gx', 'gy', 'conv', 'ex', 'ey', 'esize'].forEach((id) => { $('v_' + id).textContent = (+$(id).value).toFixed(2); });
+  ['ar', 'gx', 'gy', 'conv', 'ex', 'ey', 'esize', 'hlf'].forEach((id) => { $('v_' + id).textContent = (+$(id).value).toFixed(2); });
   loadSample();
   loadModel(MODEL);
 }
