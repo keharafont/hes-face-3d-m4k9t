@@ -688,7 +688,12 @@ function faceFront(){ place(PN, FIT()); }                                       
 function faceAngle(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.55); d.y += 0.30; place(d, FIT()); }   // 斜め
 function faceSide(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 1.15); place(d, FIT() * 0.95); }          // 横から
 // 車の正面。この車は長さが X 軸（0→4m）で、ヘッドライトは X が小さい側＝車の前
-function faceCarFront(){ place(new THREE.Vector3(-1, 0.18, 0), FIT() * (carOn ? 3.4 : 1.7)); }
+function faceCarFront(){
+  const t = carOn ? new THREE.Vector3(PC.x, PC.y, 0) : PC;   // 車を出しているときは車の中心線を見る
+  controls.target.copy(t);
+  camera.position.copy(t).add(new THREE.Vector3(-1, 0.18, 0).normalize().multiplyScalar(FIT() * (carOn ? 3.2 : 1.7)));
+  controls.update();
+}
 
 /* ---- 車のワイヤーモデル（向きを見るためだけの粗いもの）---- */
 let carObj = null, carOn = false, carLoading = false;
