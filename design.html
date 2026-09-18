@@ -27,7 +27,6 @@
     linear-gradient(45deg,#20242a 25%,transparent 25%,transparent 75%,#20242a 75%),
     linear-gradient(45deg,#20242a 25%,transparent 25%,transparent 75%,#20242a 75%);
     background-size:24px 24px; background-position:0 0,12px 12px; background-color:#2a2f36 }
-  #uvFrame{ position:absolute; display:none; border:2px dashed rgba(120,170,255,.7); pointer-events:none }
   .bar{ display:flex; gap:6px; padding:7px 10px; border-top:1px solid var(--line); background:#12151a; flex-wrap:wrap; align-items:center }
   .bar label{ font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px }
   #side{ position:absolute; right:0; top:0; bottom:0; width:260px; background:rgba(18,21,26,.96); border-left:1px solid var(--line); padding:12px; overflow:auto; z-index:4 }
@@ -97,7 +96,6 @@
       <div class="ptitle">UV 展開（レンズ面）</div>
       <div id="uvWrap"><canvas id="uvCv"></canvas></div>
       <div class="bar">
-        <button id="uvFit" class="on" title="レンズ（実際に光る帯）だけを大きく表示します">レンズを拡大</button><button id="uvAll" title="PSD の用紙全体（正方形）を表示します。レンズがどこに載っているかが分かります">用紙全体（PSD と同じ）</button>
         <label><input type="checkbox" id="uvGuide" checked> ガイド（3D にも出す）</label>
         <label title="何も描かれていない透明な場所を市松模様で示します（画像編集ソフトと同じ表示）"><input type="checkbox" id="uvChecker"> 透明を市松で表示</label>
       </div>
@@ -670,32 +668,14 @@ function drawTex(P, now){
 // 合成キャンバス（＝レンズの帯）をそのまま置く。毎フレームのコピーが無くなるぶん軽い
 const uvWrap = $('uvWrap');
 $('uvCv').remove(); texCv.id = 'uvCv'; uvWrap.appendChild(texCv);
-const uvFrame = document.createElement('div'); uvFrame.id = 'uvFrame'; uvWrap.appendChild(uvFrame);
-let uvMode = 'fit';
 function layoutUV(){
   const w = uvWrap.clientWidth, h = uvWrap.clientHeight;
   if (!w || !h) return;
-  const SQ = TW / (BAND.u1 - BAND.u0);                 // UV 正方形にあたる大きさ
-  let s, ox, oy;
-  if (uvMode === 'fit'){
-    s = Math.min(w / TW, h / TH) * 0.84;               // 目頭・目尻の外に余白
-    ox = (w - TW * s) / 2; oy = (h - TH * s) / 2;
-  } else {
-    s = Math.min(w, h) / SQ * 0.9;
-    ox = (w - SQ * s) / 2 + BAND.u0 * SQ * s;
-    oy = (h - SQ * s) / 2 + BAND.v0 * SQ * s;
-  }
+  const s = Math.min(w / TW, h / TH) * 0.84;          // 目頭・目尻の外に余白
+  const ox = (w - TW * s) / 2, oy = (h - TH * s) / 2;
   texCv.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
-  uvFrame.style.display = uvMode === 'all' ? 'block' : 'none';
-  if (uvMode === 'all'){
-    uvFrame.style.left = (ox - BAND.u0 * SQ * s) + 'px';
-    uvFrame.style.top  = (oy - BAND.v0 * SQ * s) + 'px';
-    uvFrame.style.width = (SQ * s) + 'px'; uvFrame.style.height = (SQ * s) + 'px';
-  }
 }
 function drawUV(){}                                     // 表示は canvas そのもの
-$('uvFit').addEventListener('click', () => { uvMode = 'fit'; $('uvFit').classList.add('on'); $('uvAll').classList.remove('on'); layoutUV(); });
-$('uvAll').addEventListener('click', () => { uvMode = 'all'; $('uvAll').classList.add('on'); $('uvFit').classList.remove('on'); layoutUV(); });
 $('uvChecker').addEventListener('change', function(){ uvWrap.classList.toggle('checker', this.checked); });
 window.addEventListener('resize', () => { layoutUV(); resize3d(); if (panel) faceFront(); });
 
