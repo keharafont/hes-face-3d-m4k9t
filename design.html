@@ -708,7 +708,10 @@ const controls = new OrbitControls(camera, renderer.domElement); controls.enable
 function resize3d(){ const w = view.clientWidth, h = view.clientHeight; if (!w || !h) return; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 
 const tex = new THREE.CanvasTexture(texCv); tex.flipY = false; tex.colorSpace = THREE.SRGBColorSpace;
-tex.generateMipmaps = true; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.magFilter = THREE.LinearFilter;
+// ミップマップを使うと、GPU は表示サイズに合わせて縮小済みの段（2048→1024…）を混ぜて読む。
+// これが UV ペイン（4096 の原寸から一発で縮小）との差になり、細い線が溶けて太く見えていた。
+// 確認用の道具なので、ちらつきより鮮明さを取る
+tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
 let panel = null, expo = 1.0, panelMat = null;
 const panels = {}, backs = {};   // 表（テクスチャ）と裏（黒）
 // パネルの中心・正対方向・見かけの半径（panel_framing.mjs で算出した固定値。投影面積が最大になる向き＝いちばんよく見える角度）
@@ -736,7 +739,6 @@ function loadModel(name){
     scene.add(gltf.scene);
     // LED パネルは自分で光る面なので、陰影も環境光も足さない。描いた絵の値をそのまま出す
     // （MeshStandard + emissive だと二重に明るくなり、トーンマッピングで諧調がつぶれる）
-    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     const mt = new THREE.MeshBasicMaterial({ map: tex, side: THREE.FrontSide, toneMapped: false });
     panelMat = mt;
     gltf.scene.traverse((o) => {
