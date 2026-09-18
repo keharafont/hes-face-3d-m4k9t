@@ -68,7 +68,7 @@
     <button id="export">書き出し</button>
     <button id="useSample" class="on">サンプルに戻す</button>
     <span style="flex:1"></span>
-    <button id="demo">動作デモ</button>
+    <button id="demo">動作デモ</button><select id="demoAmp" title="動きの幅"><option value="0.45">小</option><option value="1" selected>中</option><option value="1.35">大</option></select>
     <button id="side-t">設定</button>
   </header>
   <div id="main">
@@ -79,7 +79,8 @@
       <div class="bar">
         <button id="sideL" class="on">左目</button><button id="sideR">右目</button>
         <span style="width:1px;height:20px;background:#3a4048"></span>
-        <button data-c="front">正面</button><button data-c="angle">斜め</button><button data-c="side">横から</button>
+        <button data-c="front">レンズ正対</button><button data-c="carfront">車の正面</button><button data-c="angle">斜め</button><button data-c="side">横から</button>
+        <button id="carToggle" title="車の向きが分かるワイヤーモデル">車</button>
         <button data-c="in">拡大 ＋</button><button data-c="out">縮小 −</button>
         <button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button><button data-c="up">▲ 上から</button><button data-c="down">▼ 下から</button>
         <button data-c="rot">自動回転</button><button data-c="bright">明るさ</button>
@@ -452,8 +453,8 @@ function frame(dt){
     // グリーティング: 近づいてきた人を目で追う（ようこそ）
     EE.t += dt;
     const w = EE.t * 0.45;
-    EE.gx = Math.sin(w) * 0.75 + Math.sin(w * 2.7) * 0.08;      // ゆっくり左右に追う
-    EE.gy = Math.sin(w * 0.6 + 1.1) * 0.22;
+    EE.gx = clamp((Math.sin(w) * 0.75 + Math.sin(w * 2.7) * 0.08) * DEMOAMP, -1, 1);   // ゆっくり左右に追う
+    EE.gy = clamp(Math.sin(w * 0.6 + 1.1) * 0.22 * DEMOAMP, -0.6, 0.6);
     EE.ar = 0.62 + Math.sin(EE.t * 0.5) * 0.12;
   }
   EE.nextBlink -= dt;
@@ -477,7 +478,7 @@ const texCv = document.createElement('canvas'); texCv.width = texCv.height = TEX
 const tg = texCv.getContext('2d');
 let guideImg = null; loadImage(ASSET + '/guide.png' + AV).then((im) => { guideImg = im; }).catch(() => {});
 
-let LAMP = 'off', lampSeq = false, AUTOFIT = true;
+let LAMP = 'off', lampSeq = false, AUTOFIT = true, DEMOAMP = 1;
 const BX = () => BAND.u0 * TEX, BY = () => BAND.v0 * TEX;
 const BW = () => (BAND.u1 - BAND.u0) * TEX, BH = () => BANDH * TEX;
 const uNorm = (u) => (u - (BAND.u0 + BAND.u1) / 2) / ((BAND.u1 - BAND.u0) / 2);
@@ -516,7 +517,7 @@ function drawTex(P, now){
   const uc = IRIS_U + P.gaze.x * GAZE.x - P.gaze.conv * GAZE.x * 0.5;
   const eg = edgeAt(uc);
   const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE.y;
-  const D  = (eg.b - eg.t) * TEX * EYESIZE;
+  const D  = (e0.b - e0.t) * TEX * EYESIZE;        // 大きさは基準位置で決める（動いても変わらない）
   // 目玉タイプ: 一辺 D の正方形の枠に、配置の変換で貼る。拡縮は枠の中心まわり
   function drawEye(id, sc, px, py){
     const im = partImg[id]; if (!im || !partOn[id]) return;
@@ -686,6 +687,22 @@ function place(dir, dist){ controls.target.copy(PC); camera.position.copy(PC).ad
 function faceFront(){ place(PN, FIT()); }                                                                        // パネルに正対
 function faceAngle(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.55); d.y += 0.30; place(d, FIT()); }   // 斜め
 function faceSide(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 1.15); place(d, FIT() * 0.95); }          // 横から
+// 車の正面。この車は長さが X 軸（0→4m）で、ヘッドライトは X が小さい側＝車の前
+function faceCarFront(){ place(new THREE.Vector3(-1, 0.18, 0), FIT() * (carOn ? 3.4 : 1.7)); }
+
+/* ---- 車のワイヤーモデル（向きを見るためだけの粗いもの）---- */
+let carObj = null, carOn = false, carLoading = false;
+function toggleCar(){
+  if (carObj){ carOn = !carOn; carObj.visible = carOn; $('carToggle').classList.toggle('on', carOn); return; }
+  if (carLoading) return;
+  carLoading = true; $('carToggle').textContent = '車…';
+  new GLTFLoader().load(ASSET + '/car_wire.glb' + AV, (g) => {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x8fa6bd, wireframe: true, transparent: true, opacity: 0.22, depthWrite: false });
+    g.scene.traverse((o) => { if (o.isMesh) o.material = mat; });
+    carObj = g.scene; scene.add(carObj); carOn = true;
+    $('carToggle').textContent = '車'; $('carToggle').classList.add('on'); carLoading = false;
+  }, null, () => { $('carToggle').textContent = '車'; carLoading = false; });
+}
 
 let hold = null, holdUntil = 0;
 document.querySelectorAll('.bar button[data-c]').forEach((b) => {
@@ -695,7 +712,7 @@ document.querySelectorAll('.bar button[data-c]').forEach((b) => {
     ['pointerup', 'pointerleave', 'pointercancel'].forEach((n) => b.addEventListener(n, () => { const w = holdUntil - performance.now(); if (w > 0) setTimeout(() => { hold = null; }, w); else hold = null; }));
   } else b.addEventListener('click', () => {
     if (!panel) return;
-    if (c === 'front') faceFront(); else if (c === 'angle') faceAngle(); else if (c === 'side') faceSide();
+    if (c === 'front') faceFront(); else if (c === 'carfront') faceCarFront(); else if (c === 'angle') faceAngle(); else if (c === 'side') faceSide();
     else if (c === 'rot'){ controls.autoRotate = !controls.autoRotate; b.classList.toggle('on', controls.autoRotate); }
     else if (c === 'bright'){ expo = expo >= 1.6 ? 0.6 : expo + 0.3; renderer.toneMappingExposure = expo; }
   });
@@ -713,6 +730,8 @@ function holdStep(dt){
 /* ============ UI ============ */
 function syncEmo(){}   // 表情はグリーティング固定（選択 UI なし）
 $('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classList.toggle('on', EE.demo); });
+$('demoAmp').addEventListener('change', function(){ DEMOAMP = +this.value; });
+$('carToggle').addEventListener('click', toggleCar);
 $('sideL').addEventListener('click', () => useSide('L'));
 $('sideR').addEventListener('click', () => useSide('R'));
 function setSide(open){
