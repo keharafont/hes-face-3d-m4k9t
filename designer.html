@@ -101,7 +101,7 @@
   <div class="box">
     <b>何を読み込みますか？</b>
     <select id="dlgPart"></select>
-    <label id="dlgPick">PNG を選ぶ<input type="file" id="dlgFile" accept=".png,image/png" style="display:none"></label>
+    <label id="dlgPick">PNG を選ぶ<input type="file" id="dlgFile" style="display:none"></label>
     <div id="dlgName">（まだ選ばれていません）</div>
     <div id="dlgMsg"></div>
     <div class="row"><button id="dlgCancel">やめる</button><button id="dlgOk" class="on">読み込む</button></div>
@@ -296,7 +296,8 @@ async function applyDlg(){
     URL.revokeObjectURL(url);
     const p = PARTS[PIDX[id]], m = partMeta[id];
     let warn = '';
-    if (m.op > 0.97) warn = '　※ 背景が透明になっていません（白い紙ごと書き出されています）';
+    if (!/\.png$/i.test(pendingFile.name) && pendingFile.type !== 'image/png') warn = '　※ PNG ではないので透明を持てません（書き出しは PNG に変換されます）';
+    else if (m.op > 0.97) warn = '　※ 背景が透明になっていません（白い紙ごと書き出されています）';
     else if (p.kind === 'eye' && Math.abs(m.W / m.H - 1) > 0.02) warn = '　※ 正方形ではないので、描かれた中身の大きさに合わせました';
     else if (p.kind === 'band' && Math.abs(m.W / m.H - 7546 / 1525) > 0.1) warn = '　※ 帯の比率ではないので、描かれた中身の大きさに合わせました';
     $('msg').style.color = warn ? '#e8c07a' : '';
