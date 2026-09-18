@@ -23,6 +23,11 @@
   #view3d{ flex:1; min-height:0 }
   #uvWrap{ flex:1; min-height:0; position:relative; overflow:hidden; background:#0e1116 }
   #uvCv{ position:absolute; transform-origin:0 0; image-rendering:auto }
+  #uvWrap.checker{ background-image:
+    linear-gradient(45deg,#20242a 25%,transparent 25%,transparent 75%,#20242a 75%),
+    linear-gradient(45deg,#20242a 25%,transparent 25%,transparent 75%,#20242a 75%);
+    background-size:24px 24px; background-position:0 0,12px 12px; background-color:#2a2f36 }
+  #uvFrame{ position:absolute; display:none; border:2px dashed rgba(120,170,255,.7); pointer-events:none }
   .bar{ display:flex; gap:6px; padding:7px 10px; border-top:1px solid var(--line); background:#12151a; flex-wrap:wrap; align-items:center }
   .bar label{ font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px }
   #side{ position:absolute; right:0; top:0; bottom:0; width:260px; background:rgba(18,21,26,.96); border-left:1px solid var(--line); padding:12px; overflow:auto; z-index:4 }
@@ -166,7 +171,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
 const MODEL = 'eye_panels.glb' + '?v=4';
-const AV = '?v=10';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const AV = '?v=11';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ レンズの形（本番レンダラーと同じ輪郭データ） ============ */
 const TEX  = 2048;                                 // 合成テクスチャの大きさ
@@ -538,8 +543,15 @@ function frame(dt){
 }
 
 /* ============ 合成（UV テクスチャ） ============ */
-const texCv = document.createElement('canvas'); texCv.width = texCv.height = TEX;
+// 合成キャンバスは「レンズの帯だけ」。UV 正方形をまるごと持つと、帯に回る解像度が
+// 1/4 になってしまう（2048 の正方形では帯は 1887×381 しか無い）。帯だけなら同じ画素数で
+// 4 倍細かく持てる。描画のコードは今までどおり UV×TEX の座標で書き、ここで帯→キャンバスに変換する
+const TW = 4096, TH = Math.round(TW * BANDH / (BAND.u1 - BAND.u0));
+const texCv = document.createElement('canvas'); texCv.width = TW; texCv.height = TH;
 const tg = texCv.getContext('2d');
+const TGX = TW / ((BAND.u1 - BAND.u0) * TEX), TGY = TH / (BANDH * TEX);
+const resetTG = () => tg.setTransform(TGX, 0, 0, TGY, -BAND.u0 * TEX * TGX, -BAND.v0 * TEX * TGY);
+resetTG();
 let guideImg = null; loadImage(ASSET + '/guide.png' + AV).then((im) => { guideImg = im; }).catch(() => {});
 
 let LAMP = 'off', lampSeq = false, AUTOFIT = true, DEMOAMP = 1;
@@ -571,7 +583,8 @@ function strokeEdge(fn){
 }
 
 function drawTex(P, now){
-  tg.clearRect(0, 0, TEX, TEX);
+  resetTG();
+  tg.clearRect(-TEX, -TEX, TEX * 3, TEX * 3);
 
   tg.save(); lensPath(tg); tg.clip();       // レンズの外には何も出さない
   drawBand('reflector');
@@ -641,52 +654,37 @@ function drawTex(P, now){
 
 
 /* ============ UV パネル ============ */
-const uv = $('uvCv'), uvCtx = uv.getContext('2d');
-// UV の外側にも余白を持たせる。レンズは u=1.004 まで伸びていてテクスチャ（u 0–1）から
-// はみ出すので、はみ出す分と余白をキャンバスに含めておかないと目尻が窓の端で切れて見える
-const PAD = Math.round(TEX * 0.18);
-uv.width = uv.height = TEX + PAD * 2;
+// 合成キャンバス（＝レンズの帯）をそのまま置く。毎フレームのコピーが無くなるぶん軽い
+const uvWrap = $('uvWrap');
+$('uvCv').remove(); texCv.id = 'uvCv'; uvWrap.appendChild(texCv);
+const uvFrame = document.createElement('div'); uvFrame.id = 'uvFrame'; uvWrap.appendChild(uvFrame);
 let uvMode = 'fit';
 function layoutUV(){
-  const w = $('uvWrap').clientWidth, h = $('uvWrap').clientHeight;
+  const w = uvWrap.clientWidth, h = uvWrap.clientHeight;
+  if (!w || !h) return;
+  const SQ = TW / (BAND.u1 - BAND.u0);                 // UV 正方形にあたる大きさ
   let s, ox, oy;
   if (uvMode === 'fit'){
-    // 目頭・目尻の外側にレンズ幅の 6% ずつ余白を足した範囲を収める
-    const mg = (BAND.u1 - BAND.u0) * TEX * 0.14;
-    const bw = (BAND.u1 - BAND.u0) * TEX + mg * 2, bh = (BAND.v1 - BAND.v0) * TEX + mg * 2;
-    s = Math.min(w / bw, h / bh) * 0.96;
-    ox = (w - bw * s) / 2 - (PAD + BAND.u0 * TEX - mg) * s;
-    oy = (h - bh * s) / 2 - (PAD + BAND.v0 * TEX - mg) * s;
+    s = Math.min(w / TW, h / TH) * 0.84;               // 目頭・目尻の外に余白
+    ox = (w - TW * s) / 2; oy = (h - TH * s) / 2;
   } else {
-    const t = TEX + PAD * 2;
-    s = Math.min(w, h) / t * 0.94; ox = (w - t * s) / 2; oy = (h - t * s) / 2;
+    s = Math.min(w, h) / SQ * 0.9;
+    ox = (w - SQ * s) / 2 + BAND.u0 * SQ * s;
+    oy = (h - SQ * s) / 2 + BAND.v0 * SQ * s;
   }
-  uv.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
+  texCv.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
+  uvFrame.style.display = uvMode === 'all' ? 'block' : 'none';
+  if (uvMode === 'all'){
+    uvFrame.style.left = (ox - BAND.u0 * SQ * s) + 'px';
+    uvFrame.style.top  = (oy - BAND.v0 * SQ * s) + 'px';
+    uvFrame.style.width = (SQ * s) + 'px'; uvFrame.style.height = (SQ * s) + 'px';
+  }
 }
+function drawUV(){}                                     // 表示は canvas そのもの
 $('uvFit').addEventListener('click', () => { uvMode = 'fit'; $('uvFit').classList.add('on'); $('uvAll').classList.remove('on'); layoutUV(); });
 $('uvAll').addEventListener('click', () => { uvMode = 'all'; $('uvAll').classList.add('on'); $('uvFit').classList.remove('on'); layoutUV(); });
+$('uvChecker').addEventListener('change', function(){ uvWrap.classList.toggle('checker', this.checked); });
 window.addEventListener('resize', () => { layoutUV(); resize3d(); if (panel) faceFront(); });
-
-const checker = (() => { const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d');
-  g.fillStyle = '#2a2f36'; g.fillRect(0, 0, 32, 32); g.fillStyle = '#20242a'; g.fillRect(0, 0, 16, 16); g.fillRect(16, 16, 16, 16); return c; })();
-function drawUV(){
-  uvCtx.setTransform(1, 0, 0, 1, 0, 0);
-  uvCtx.clearRect(0, 0, uv.width, uv.height);
-  uvCtx.fillStyle = '#000';                        // 余白もシートと同じ地色にして、目尻側が切れて見えないように
-  uvCtx.fillRect(0, 0, uv.width, uv.height);
-  uvCtx.translate(PAD, PAD);                       // ここから内側がテクスチャ（u,v = 0–1）
-  if ($('uvChecker').checked){ const p = uvCtx.createPattern(checker, 'repeat'); uvCtx.fillStyle = p; uvCtx.fillRect(0, 0, TEX, TEX); }
-  uvCtx.drawImage(texCv, 0, 0);
-  // レンズは u=1.004 まで伸びている。u>1 は反対の端（u−1）に回り込むので、その分だけ描き足す
-  const over = (BAND.u1 - 1) * TEX;
-  if (over > 0){ uvCtx.save(); uvCtx.beginPath(); uvCtx.rect(TEX, 0, over, TEX); uvCtx.clip(); uvCtx.drawImage(texCv, TEX, 0); uvCtx.restore(); }
-  // テクスチャの外周（u,v = 0 / 1）。「UV 全体」のときだけ出す
-  if (uvMode === 'all'){
-    uvCtx.strokeStyle = 'rgba(120,170,255,.7)';
-    uvCtx.lineWidth = 5; uvCtx.setLineDash([26, 18]); uvCtx.strokeRect(0, 0, TEX, TEX); uvCtx.setLineDash([]);
-  }
-  uvCtx.setTransform(1, 0, 0, 1, 0, 0);
-}
 
 /* ============ 3D（ヘッドライトに貼る LED パネルだけ） ============ */
 const view = $('view3d');
@@ -737,6 +735,14 @@ function loadModel(name){
       if (!o.isMesh) return;
       const k = /_L$/.test(o.name) ? 'L' : 'R';
       o.material = mt; panels[k] = o; o.updateWorldMatrix(true, false);
+      // テクスチャは帯だけなので、UV も帯が 0–1 になるように読み替える
+      const uvA = o.geometry.attributes.uv;
+      if (uvA && !o.userData.uvFixed){
+        for (let i = 0; i < uvA.count; i++){
+          uvA.setXY(i, (uvA.getX(i) - BAND.u0) / (BAND.u1 - BAND.u0), (uvA.getY(i) - BAND.v0) / BANDH);
+        }
+        uvA.needsUpdate = true; o.userData.uvFixed = true;
+      }
       // 裏側は黒（パネルの裏を見たときに絵が透けないように）
       const back = new THREE.Mesh(o.geometry, new THREE.MeshBasicMaterial({ color: 0x0a0c0f, side: THREE.BackSide }));
       back.applyMatrix4(o.matrixWorld); scene.add(back); backs[k] = back;
