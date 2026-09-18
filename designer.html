@@ -79,7 +79,7 @@
       <div class="bar">
         <button id="sideL" class="on">左目</button><button id="sideR">右目</button>
         <span style="width:1px;height:20px;background:#3a4048"></span>
-        <button data-c="front">レンズ正対</button><button data-c="carfront">車の正面</button><button data-c="angle">斜め</button><button data-c="side">横から</button>
+        <button data-c="carfront">正面</button><button data-c="angle">斜め</button><button data-c="side">横から</button>
         <button id="carToggle" title="車の向きが分かるワイヤーモデル">車</button>
         <button data-c="in">拡大 ＋</button><button data-c="out">縮小 −</button>
         <button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button><button data-c="up">▲ 上から</button><button data-c="down">▼ 下から</button>
@@ -684,16 +684,19 @@ function loadModel(name){
 // パネルが画面に収まる距離。縦長の画面では横がはみ出すので aspect も見る
 const FIT = () => PR / (Math.tan(camera.fov * Math.PI / 360) * Math.min(1, camera.aspect)) * 1.25;
 function place(dir, dist){ controls.target.copy(PC); camera.position.copy(PC).add(dir.clone().normalize().multiplyScalar(dist)); controls.update(); }
-function faceFront(){ place(PN, FIT()); }                                                                        // パネルに正対
-function faceAngle(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.55); d.y += 0.30; place(d, FIT()); }   // 斜め
-function faceSide(){ const d = PN.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 1.15); place(d, FIT() * 0.95); }          // 横から
-// 車の正面。この車は長さが X 軸（0→4m）で、ヘッドライトは X が小さい側＝車の前
-function faceCarFront(){
-  const t = carOn ? new THREE.Vector3(PC.x, PC.y, 0) : PC;   // 車を出しているときは車の中心線を見る
+// 視点はすべて「車に対して」。この車は長さが X 軸（0→4m）で、ヘッドライトは X の小さい側＝車の前。
+// 幅は Z 軸で、左目が +Z・右目が −Z。
+const zSign = () => (SIDE === 'L' ? 1 : -1);
+function carView(dx, dy, dz, k, center){
+  const t = center ? new THREE.Vector3(PC.x, PC.y, 0) : PC;
   controls.target.copy(t);
-  camera.position.copy(t).add(new THREE.Vector3(-1, 0.18, 0).normalize().multiplyScalar(FIT() * (carOn ? 3.2 : 1.7)));
+  camera.position.copy(t).add(new THREE.Vector3(dx, dy, dz).normalize().multiplyScalar(FIT() * k));
   controls.update();
 }
+function faceCarFront(){ carView(-1, 0.18, 0, carOn ? 3.2 : 1.7, carOn); }                  // 車の真正面
+function faceAngle(){ carView(-1, 0.30, 0.85 * zSign(), carOn ? 2.4 : 1.15, false); }        // 斜め前（見ている目の側から）
+function faceSide(){ carView(-0.08, 0.12, 1 * zSign(), carOn ? 2.4 : 1.15, false); }         // 真横
+const faceFront = faceCarFront;                                                              // 起動時・切り替え時の既定
 
 /* ---- 車のワイヤーモデル（向きを見るためだけの粗いもの）---- */
 let carObj = null, carOn = false, carLoading = false;
@@ -717,7 +720,7 @@ document.querySelectorAll('.bar button[data-c]').forEach((b) => {
     ['pointerup', 'pointerleave', 'pointercancel'].forEach((n) => b.addEventListener(n, () => { const w = holdUntil - performance.now(); if (w > 0) setTimeout(() => { hold = null; }, w); else hold = null; }));
   } else b.addEventListener('click', () => {
     if (!panel) return;
-    if (c === 'front') faceFront(); else if (c === 'carfront') faceCarFront(); else if (c === 'angle') faceAngle(); else if (c === 'side') faceSide();
+    if (c === 'carfront') faceCarFront(); else if (c === 'angle') faceAngle(); else if (c === 'side') faceSide();
     else if (c === 'rot'){ controls.autoRotate = !controls.autoRotate; b.classList.toggle('on', controls.autoRotate); }
     else if (c === 'bright'){ expo = expo >= 1.6 ? 0.6 : expo + 0.3; renderer.toneMappingExposure = expo; }
   });
