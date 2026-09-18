@@ -87,6 +87,7 @@
         <button data-c="carfront">正面</button><button data-c="angle">斜め</button><button data-c="side">横から</button>
         <button data-c="flat" title="レンズの面に正対して見ます。UV 展開と同じ形に見えるので、絵を見比べるときはこちら">レンズ正対</button>
         <button id="carToggle" title="車の向きが分かるワイヤーモデル">車</button>
+        <button id="hires" title="合成テクスチャを 8192×1656（デザイナーの絵とほぼ等倍）にします。重くなります">高精細</button>
         <button data-c="in">拡大 ＋</button><button data-c="out">縮小 −</button>
         <button data-c="left">◀ 回す</button><button data-c="right">回す ▶</button><button data-c="up">▲ 上から</button><button data-c="down">▼ 下から</button>
         <button data-c="rot">自動回転</button><button data-c="bright">明るさ</button>
@@ -546,11 +547,18 @@ function frame(dt){
 // 合成キャンバスは「レンズの帯だけ」。UV 正方形をまるごと持つと、帯に回る解像度が
 // 1/4 になってしまう（2048 の正方形では帯は 1887×381 しか無い）。帯だけなら同じ画素数で
 // 4 倍細かく持てる。描画のコードは今までどおり UV×TEX の座標で書き、ここで帯→キャンバスに変換する
-const TW = 4096, TH = Math.round(TW * BANDH / (BAND.u1 - BAND.u0));
+let TW = 4096, TH = Math.round(TW * BANDH / (BAND.u1 - BAND.u0));
 const texCv = document.createElement('canvas'); texCv.width = TW; texCv.height = TH;
 const tg = texCv.getContext('2d');
-const TGX = TW / ((BAND.u1 - BAND.u0) * TEX), TGY = TH / (BANDH * TEX);
+let TGX = TW / ((BAND.u1 - BAND.u0) * TEX), TGY = TH / (BANDH * TEX);
 const resetTG = () => tg.setTransform(TGX, 0, 0, TGY, -BAND.u0 * TEX * TGX, -BAND.v0 * TEX * TGY);
+function setTexRes(w){                       // 合成テクスチャの横幅を変える（4096 / 8192）
+  TW = w; TH = Math.round(TW * BANDH / (BAND.u1 - BAND.u0));
+  texCv.width = TW; texCv.height = TH;
+  TGX = TW / ((BAND.u1 - BAND.u0) * TEX); TGY = TH / (BANDH * TEX);
+  resetTG(); if (typeof tex !== 'undefined'){ tex.needsUpdate = true; }
+  if (typeof layoutUV === 'function') layoutUV();
+}
 resetTG();
 let guideImg = null; loadImage(ASSET + '/guide.png' + AV).then((im) => { guideImg = im; }).catch(() => {});
 
@@ -821,6 +829,10 @@ function syncEmo(){}   // 表情はグリーティング固定（選択 UI な�
 $('demo').addEventListener('click', function(){ EE.demo = !EE.demo; this.classList.toggle('on', EE.demo); });
 $('demoAmp').addEventListener('change', function(){ DEMOAMP = +this.value; });
 $('carToggle').addEventListener('click', toggleCar);
+$('hires').addEventListener('click', function(){
+  const hi = TW < 8192; setTexRes(hi ? 8192 : 4096);
+  this.classList.toggle('on', hi); this.textContent = hi ? '高精細 ON' : '高精細';
+});
 $('sideL').addEventListener('click', () => useSide('L'));
 $('sideR').addEventListener('click', () => useSide('R'));
 function setSide(open){
@@ -862,6 +874,30 @@ function setLamp(m, seq){ LAMP = m; lampSeq = seq;
   document.addEventListener('pointermove', (e) => { if (!drag) return; if (!(e.buttons & 1)){ drag = null; return; } setFromX(drag.r, e.clientX); }, true);
   ['pointerup', 'pointercancel'].forEach((n) => document.addEventListener(n, () => { drag = null; }, true));
 })();
+
+/* ---- 検証用: window.__diag() で、3D の画素とテクスチャの画素を同じ地点で比べる ---- */
+window.__diag = function(count){
+  const P = frame(0.001);
+  drawTex(P, performance.now()); tex.needsUpdate = true;
+  renderer.render(scene, camera);
+  const p = panels[SIDE], g = p.geometry, pos = g.attributes.position, uvA = g.attributes.uv, idx = g.index;
+  const cv = renderer.domElement, gl = renderer.getContext();
+  const t2 = texCv.getContext('2d');
+  const V = new THREE.Vector3(); const rows = [];
+  const tri = idx ? idx.count / 3 : pos.count / 3;
+  for (let k = 0; k < tri && rows.length < (count || 12); k++){
+    const a = idx.getX(k * 3), b = idx.getX(k * 3 + 1), c = idx.getX(k * 3 + 2);
+    const u = (uvA.getX(a) + uvA.getX(b) + uvA.getX(c)) / 3, v = (uvA.getY(a) + uvA.getY(b) + uvA.getY(c)) / 3;
+    V.set((pos.getX(a) + pos.getX(b) + pos.getX(c)) / 3, (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3, (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3);
+    V.applyMatrix4(p.matrixWorld).project(camera);
+    const sx = Math.round((V.x * 0.5 + 0.5) * cv.width), sy = Math.round((V.y * 0.5 + 0.5) * cv.height);
+    if (sx < 1 || sy < 1 || sx > cv.width - 2 || sy > cv.height - 2) continue;
+    const px = new Uint8Array(4); gl.readPixels(sx, sy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const td = t2.getImageData(Math.min(TW - 1, Math.round(u * TW)), Math.min(TH - 1, Math.round(v * TH)), 1, 1).data;
+    rows.push({ uv: [+u.toFixed(3), +v.toFixed(3)], tex: [td[0], td[1], td[2], td[3]], gl: [px[0], px[1], px[2]] });
+  }
+  return { tex: [TW, TH], buf: [cv.width, cv.height], pr: renderer.getPixelRatio(), rows };
+};
 
 /* ============ ループ ============ */
 let last = performance.now();
