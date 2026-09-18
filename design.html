@@ -592,7 +592,12 @@ function strokeEdge(fn){
 
 function drawTex(P, now){
   resetTG();
+  // 3D のテクスチャはアルファを持てない（素の RGB がそのまま出る）ので、
+  // 半透明のまま渡すと、鉛筆のような薄い線が全部くっきり不透明に出てしまう。
+  // 不透明な黒を下地に敷いて、半透明はここで解決してから渡す
   tg.clearRect(-TEX, -TEX, TEX * 3, TEX * 3);
+  tg.fillStyle = '#000';
+  tg.fillRect(-TEX, -TEX, TEX * 3, TEX * 3);
 
   tg.save(); lensPath(tg); tg.clip();       // レンズの外には何も出さない
   drawBand('reflector');
