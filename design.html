@@ -688,8 +688,8 @@ window.addEventListener('resize', () => { layoutUV(); resize3d(); if (panel) fac
 
 /* ============ 3D（ヘッドライトに貼る LED パネルだけ） ============ */
 const view = $('view3d');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(1.5, devicePixelRatio));
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));   // 画面の実解像度で描く（1.5 だと Retina で拡大ボケする）
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
 view.appendChild(renderer.domElement);
@@ -751,7 +751,7 @@ function loadModel(name){
     if (!panels.R && !panels.L){ $('prog').textContent = 'パネルのメッシュが見つかりません'; return; }
     panel = panels.L || panels.R;
     $('prog').style.display = 'none';
-    window.__dv = { camera, controls, scene, panels, backs, get panel(){ return panels[SIDE]; }, PC, PN, PR };
+    window.__dv = { camera, controls, scene, panels, backs, get panel(){ return panels[SIDE]; }, PC, PN, PR, renderer, tex, texCv };
     useSide('L');
   }, (ev) => { if (ev.total) $('prog').textContent = 'パネルを読み込み中… ' + Math.round(ev.loaded / ev.total * 100) + '%'; },
      (e) => { $('prog').textContent = '読み込めませんでした: ' + (e && e.message || e); });
