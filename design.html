@@ -101,6 +101,7 @@
 <div id="dlg">
   <div class="box">
     <b>何を読み込みますか？</b>
+    <div style="font-size:11px;color:var(--dim);margin:-6px 0 10px">書き出した zip を選ぶと、全パーツをまとめて読み込みます</div>
     <select id="dlgPart"></select>
     <label id="dlgPick">PNG を選ぶ<input type="file" id="dlgFile" style="display:none"></label>
     <div id="dlgName">（まだ選ばれていません）</div>
@@ -145,11 +146,11 @@
   <div id="layers"></div>
   <h3>読み込み</h3>
   <div style="margin-bottom:6px"><label style="font-size:11px;color:var(--dim);display:flex;gap:5px;align-items:center"><input type="checkbox" id="autofit" checked> 読み込んだ絵を自動で位置合わせ</label></div>
-  <div style="font-size:11px;color:var(--dim)">「パーツを読み込む」で、パーツを選んでから PNG を 1 枚ずつ読み込みます。画面にドラッグしても同じ画面が出ます。ファイル名は自由で構いません。<br>確認できたら「書き出し」で、正しい名前に揃えた zip が 1 つ落ちます。</div>
+  <div style="font-size:11px;color:var(--dim)">「パーツを読み込む」で、パーツを選んでから PNG を 1 枚ずつ読み込みます。画面にドラッグしても同じ画面が出ます。ファイル名は自由で構いません。<br>確認できたら「書き出し」で、正しい名前に揃えた zip が 1 つ落ちます。<br>その zip は、そのまま読み込めばまとめて復元できます（ダイアログで zip を選ぶか、画面にドロップ）。</div>
   <div id="msg"></div>
 </aside>
 
-<div id="drop">ここに PNG をドロップ</div>
+<div id="drop">ここに PNG／zip をドロップ</div>
 
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
@@ -312,14 +313,76 @@ async function applyDlg(){
     renderLayerList(); closeDlg(); openPlace(id);
   } catch (e){ $('dlgMsg').textContent = '読み込めませんでした（PNG を選んでください）'; }
 }
+/* ---- 書き出した zip をまとめて読み込む ---- */
+async function unzip(file){
+  const buf = new Uint8Array(await file.arrayBuffer()), dv = new DataView(buf.buffer);
+  let e = -1;
+  for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i--) if (dv.getUint32(i, true) === 0x06054b50){ e = i; break; }
+  if (e < 0) throw new Error('zip として読めません');
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true);
+  const out = [];
+  for (let k = 0; k < n; k++){
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const off = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nlen));
+    const lnlen = dv.getUint16(off + 26, true), lelen = dv.getUint16(off + 28, true);
+    const start = off + 30 + lnlen + lelen;
+    let data = buf.subarray(start, start + csize);
+    if (method === 8){
+      const st = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      data = new Uint8Array(await new Response(st).arrayBuffer());
+    } else if (method !== 0){ throw new Error('未対応の圧縮形式です'); }
+    out.push({ name, data });
+    p += 46 + nlen + elen + clen;
+  }
+  return out;
+}
+async function loadZip(file){
+  $('msg').style.color = ''; $('msg').textContent = file.name + ' を開いています…';
+  const items = await unzip(file);
+  let map = null;
+  const man = items.find((i) => /manifest\.json$/i.test(i.name));
+  if (man){ try { const j = JSON.parse(new TextDecoder().decode(man.data)); map = {}; (j.parts || []).forEach((q) => { map[q.file] = q.part; }); } catch(_){} }
+  let found = 0; const skip = [];
+  for (const it of items){
+    if (!/\.png$/i.test(it.name) || /(^|\/)original\//i.test(it.name)) continue;
+    const base = it.name.split('/').pop();
+    let id = map && map[base];
+    if (!id){ const hit = PARTS.find((q) => base.toLowerCase().includes(q.id)); id = hit && hit.id; }
+    if (!id){ skip.push(base); continue; }
+    const url = URL.createObjectURL(new Blob([it.data], { type: 'image/png' }));
+    try {
+      const im = await loadImage(url);
+      setPart(id, im, new File([it.data], base, { type: 'image/png' }));
+      partOn[id] = true; found++;
+    } catch(_){ skip.push(base); }
+    URL.revokeObjectURL(url);
+  }
+  renderLayerList(); $('useSample').classList.remove('on');
+  $('msg').style.color = skip.length ? '#e8c07a' : '';
+  $('msg').textContent = file.name + ' から ' + found + ' パーツを読み込みました'
+    + (skip.length ? '／振り分けできず: ' + skip.slice(0, 4).join(', ') : '');
+}
+const isZip = (f) => f && (/\.zip$/i.test(f.name) || f.type === 'application/zip');
+
 $('pick').addEventListener('click', () => openDlg(null));
-$('dlgFile').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) openDlg(f); });
+$('dlgFile').addEventListener('change', (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  if (isZip(f)){ closeDlg(); loadZip(f).catch((err) => { $('msg').style.color = '#e08080'; $('msg').textContent = '読み込めませんでした: ' + err.message; }); return; }
+  openDlg(f);
+});
 $('dlgOk').addEventListener('click', applyDlg);
 $('dlgCancel').addEventListener('click', closeDlg);
 $('useSample').addEventListener('click', async () => { await loadSample(); $('useSample').classList.add('on'); });
 ['dragenter', 'dragover'].forEach((n) => document.addEventListener(n, (e) => { e.preventDefault(); $('drop').style.display = 'flex'; }));
 ['dragleave', 'drop'].forEach((n) => document.addEventListener(n, (e) => { e.preventDefault(); if (n === 'dragleave' && e.relatedTarget) return; $('drop').style.display = 'none'; }));
-document.addEventListener('drop', (e) => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) openDlg(f); });
+document.addEventListener('drop', (e) => {
+  const f = e.dataTransfer && e.dataTransfer.files[0]; if (!f) return;
+  if (isZip(f)){ loadZip(f).catch((err) => { $('msg').style.color = '#e08080'; $('msg').textContent = '読み込めませんでした: ' + err.message; }); return; }
+  openDlg(f);
+});
 
 /* ---- 書き出し: 読み込んだ原本をそのままの画質で zip 1 つに ---- */
 const CRC = (() => { const t = new Uint32Array(256);
