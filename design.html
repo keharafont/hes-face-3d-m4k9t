@@ -171,7 +171,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
 const MODEL = 'eye_panels.glb' + '?v=4';
-const AV = '?v=11';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const AV = '?v=10';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ レンズの形（本番レンダラーと同じ輪郭データ） ============ */
 const TEX  = 2048;                                 // 合成テクスチャの大きさ
@@ -737,11 +737,12 @@ function loadModel(name){
       o.material = mt; panels[k] = o; o.updateWorldMatrix(true, false);
       // テクスチャは帯だけなので、UV も帯が 0–1 になるように読み替える
       const uvA = o.geometry.attributes.uv;
-      if (uvA && !o.userData.uvFixed){
+      // 左右のパネルは UV の配列そのものを共有している。目印は配列側に置かないと二重に変換される
+      if (uvA && !uvA.__bandFixed){
         for (let i = 0; i < uvA.count; i++){
           uvA.setXY(i, (uvA.getX(i) - BAND.u0) / (BAND.u1 - BAND.u0), (uvA.getY(i) - BAND.v0) / BANDH);
         }
-        uvA.needsUpdate = true; o.userData.uvFixed = true;
+        uvA.needsUpdate = true; uvA.__bandFixed = true;
       }
       // 裏側は黒（パネルの裏を見たときに絵が透けないように）
       const back = new THREE.Mesh(o.geometry, new THREE.MeshBasicMaterial({ color: 0x0a0c0f, side: THREE.BackSide }));
