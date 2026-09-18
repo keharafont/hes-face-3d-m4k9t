@@ -160,7 +160,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const $ = (id) => document.getElementById(id);
 const ASSET = '.';                 // アセットの置き場所（ビルド時に差し替え）
 const MODEL = 'eye_panels.glb' + '?v=4';
-const AV = '?v=5';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
+const AV = '?v=8';                     // サンプル画像のキャッシュ対策        // パネルの 3D（?v= はブラウザのキャッシュ対策）
 
 /* ============ レンズの形（本番レンダラーと同じ輪郭データ） ============ */
 const TEX  = 2048;                                 // 合成テクスチャの大きさ
@@ -168,7 +168,9 @@ const EDGE = {"u0":0.082835,"u1":1.00402,"v0":0.4184,"v1":0.604523,"n":192,"top"
 const BAND = { u0: EDGE.u0, u1: EDGE.u1, v0: EDGE.v0, v1: EDGE.v1 };
 const BANDH  = BAND.v1 - BAND.v0;
 const IRIS_U = 0.3999;                             // 目玉の基準位置（u）
-const GAZE   = { x: 0.14478, y: 0.06445 };         // 視線 ±1 の移動量（UV）
+// 視線 ±1 で目玉が動く量。本番レンダラー（eye-player）と同じ「目玉の半径に対する割合」。
+//   横: 0.36w ÷ 半径 0.52w = 0.692   縦: 0.28h ÷ 半径 0.68h = 0.412
+const GAZE_K = { x: 0.36 / 0.52, y: 0.28 / 0.68 };
 let   EYESIZE = 0.94;                              // 目玉の直径 ÷ その場所のレンズの高さ
 const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 
@@ -507,9 +509,11 @@ function drawTex(P, now){
   drawBand('reflector');
 
   // ---- 目玉: 視線で動かし、その場所のレンズの高さに収める ----
-  const uc = IRIS_U + P.gaze.x * GAZE.x - P.gaze.conv * GAZE.x * 0.5;
+  const e0 = edgeAt(IRIS_U);
+  const R  = (e0.b - e0.t) * EYESIZE / 2;                 // 目玉の半径（UV）
+  const uc = IRIS_U + (P.gaze.x - P.gaze.conv) * GAZE_K.x * R;
   const eg = edgeAt(uc);
-  const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE.y;
+  const vc = (eg.t + eg.b) / 2 + P.gaze.y * GAZE_K.y * R;
   const D  = (eg.b - eg.t) * TEX * EYESIZE;
   // 目玉タイプ: 一辺 D の正方形の枠に、配置の変換で貼る。拡縮は枠の中心まわり
   function drawEye(id, sc, px, py){
@@ -520,8 +524,9 @@ function drawTex(P, now){
   }
   drawEye('iris',  0.80 + 0.30 * P.iris.dia,  uc, vc);
   drawEye('pupil', 0.55 + 0.85 * P.pupil.dia, uc, vc);
-  // ハイライトは光源側。視線には 25% だけ付いていく（動かないから球に見える）
-  const hb = edgeAt(IRIS_U), vb = (hb.t + hb.b) / 2;
+  // ハイライトは光源側。視線には 25% だけ付いていく（動かないから球に見える）。
+  // 本番レンダラーと同じ割合。目玉の動く量自体が半径に対して小さいので、瞳から外れない
+  const vb = (e0.t + e0.b) / 2;
   drawEye('highlight', 1, IRIS_U + (uc - IRIS_U) * 0.25, vb + (vc - vb) * 0.25);
 
   // ---- まぶた: 本番レンダラーと同じ式で縁を動かす ----
